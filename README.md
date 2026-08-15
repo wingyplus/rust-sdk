@@ -73,6 +73,81 @@ engine supplies it in the dispatched path):
 dagger call rust-sdk init-module --name my-module --path .dagger/modules/my-module
 ```
 
+## Writing functions
+
+A module's API is declared with two attributes. `#[dagger_sdk::object]` on the
+`impl` block reads the signatures at compile time; `#[dagger_sdk::function]`
+marks which methods are exposed. Anything unmarked stays private, so helpers
+need no special treatment.
+
+```rust
+use goish::{fmt, int, string};
+
+pub struct Build;
+
+#[dagger_sdk::object]
+impl Build {
+    /// Build an image and return its tag.        // becomes the description
+    #[dagger_sdk::function]
+    pub fn image(
+        &self,
+        #[dagger(default = "alpine:3.21")] base: string,
+        #[dagger(doc = "Tag to apply")] tag: Option<string>,
+        #[dagger(default = 1)] jobs: int,
+    ) -> string {
+        fmt::Sprintf!("%s:%s", base, tag.unwrap_or(string("latest")))
+    }
+
+    // No attribute: invisible to `dagger call`.
+    fn toolchain(&self) -> int { 0 }
+}
+
+#[goish::main]
+fn main() {
+    dagger_sdk::serve::<Build>()
+}
+```
+
+```console
+$ dagger call image --base ubuntu:24.04
+ubuntu:24.04:latest
+```
+
+Method names are camelCased for the API, so `container_echo` is called as
+`container-echo`. The method's `///` doc comment becomes the function's
+description.
+
+### Argument options
+
+Options go in `#[dagger(...)]` on the parameter itself. The attribute is
+stripped before `rustc` sees the function, so it needs nothing in scope;
+`#[dagger_sdk(...)]` is accepted too.
+
+| Option | Effect | Go SDK equivalent |
+| --- | --- | --- |
+| `default = <literal>` | Value used when the caller omits the argument | `+default` |
+| `doc = "..."` | The argument's description | a doc comment |
+| `deprecated = "..."` | Marks the argument deprecated | `+deprecated` |
+| `default_path = "..."` | Load a `Directory`/`File` from the context directory | `+defaultPath` |
+| `ignore = ["...", ...]` | Patterns to skip when loading a contextual argument | `+ignore` |
+
+`doc` is the one option that cannot mirror Go: Rust has no doc comments on
+parameters, so a description has to be written as an option.
+
+An argument is optional when its type is `Option<T>` **or** when it has a
+`default` — there is no `+optional` marker to write.
+
+`default_path` and `ignore` are parsed and forwarded, but the engine accepts
+them only on object types (`Directory`, `File`). Those need the generated
+bindings, so using either today is a compile error naming the parameter, rather
+than a failure at module load.
+
+### Supported types
+
+`string` (also `String` and `&str`), `int`, `bool`, and `Option<T>` of each. A
+function returning nothing maps to `VOID_KIND`. Object types such as `Container`
+are rejected at compile time until the bindings are generated.
+
 ## Generate SDK files
 
 For a single module:

@@ -24,11 +24,11 @@ impl {{ .ModuleType }} {
         fmt::Sprintf!("echo %s", string_arg)
     }
 
+    // Arguments carry their options in `#[dagger(...)]` — `default`, `doc` and
+    // `deprecated`. An argument is optional when it is an `Option<T>` or has a
+    // default. Keep the `///` below short: it becomes the description shown by
+    // `dagger functions`.
     /// Returns the pattern and directory it would grep.
-    ///
-    /// Arguments carry their options in `#[dagger(...)]`: `default`,
-    /// `default_path`, `ignore`, `doc` and `deprecated`. An `Option<T>`
-    /// argument is optional, as is any argument with a default.
     #[dagger_sdk::function]
     pub fn grep_dir(
         &self,

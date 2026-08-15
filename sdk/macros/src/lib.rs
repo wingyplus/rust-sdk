@@ -33,11 +33,34 @@ mod parse;
 use parse::{quote_str, render, split_commas, unquote, Attr, Function};
 use proc_macro::{Delimiter, TokenStream, TokenTree};
 
-/// Mark a method as part of the module's API. Consumed by [`macro@object`].
+/// Mark a method as part of the module's API.
 ///
-/// On its own this is inert: it passes the method through untouched so that the
-/// attribute resolves and an IDE sees a normal function. `#[dagger::object]` on
-/// the surrounding `impl` block is what reads it.
+/// Only methods carrying this attribute are exposed; anything else in the
+/// `impl` block stays private to the module, so helpers need no special
+/// treatment.
+///
+/// ```ignore
+/// #[dagger_sdk::object]
+/// impl Build {
+///     /// Compile the project.                    // becomes the description
+///     #[dagger_sdk::function]
+///     pub fn compile(&self, target: string) -> string {
+///         self.toolchain(target)                  // calls a private helper
+///     }
+///
+///     // No attribute: invisible to `dagger call`.
+///     fn toolchain(&self, target: string) -> string { target }
+/// }
+/// ```
+///
+/// The method's `///` doc comment becomes the function's description, and its
+/// name is camelCased for the API — `container_echo` is called as
+/// `container-echo` on the command line.
+///
+/// On its own this attribute is inert: it returns the method untouched so the
+/// path resolves and an IDE sees an ordinary function. [`macro@object`] on the
+/// surrounding `impl` block is what reads it, and what strips it before `rustc`
+/// gets there.
 #[proc_macro_attribute]
 pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
@@ -45,9 +68,87 @@ pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Declare the object a module serves, and the functions it exposes.
 ///
-/// Applied to an `impl` block. Every method inside carrying
-/// `#[dagger::function]` becomes part of the module's API; everything else is
-/// left alone.
+/// Applied to the `impl` block of the module's root type. It reads the method
+/// signatures at compile time and emits the `Object` impl that `serve::<T>()`
+/// walks — the table describing the module to the engine, and the dispatch that
+/// routes an incoming call.
+///
+/// ```ignore
+/// #![no_std]
+/// #![no_main]
+///
+/// use goish::{fmt, string};
+///
+/// pub struct Build;
+///
+/// #[dagger_sdk::object]
+/// impl Build {
+///     /// Build an image and return its tag.
+///     #[dagger_sdk::function]
+///     pub fn image(
+///         &self,
+///         // Options go on the parameter; `doc` carries its description,
+///         // since Rust has no doc comments on parameters.
+///         #[dagger(default = "alpine:3.21")]
+///         base: string,
+///
+///         #[dagger(doc = "Tag to apply; defaults to the short SHA")]
+///         tag: Option<string>,
+///
+///         #[dagger(default = 1)]
+///         jobs: int,
+///
+///         #[dagger(deprecated = "use `jobs` instead")]
+///         parallel: Option<bool>,
+///     ) -> string {
+///         fmt::Sprintf!("%s:%s", base, tag.unwrap_or(string("latest")))
+///     }
+/// }
+///
+/// #[goish::main]
+/// fn main() {
+///     dagger_sdk::serve::<Build>()
+/// }
+/// ```
+///
+/// # Argument options
+///
+/// These live in `#[dagger(...)]` on the parameter itself. `#[dagger_sdk(...)]`
+/// is accepted too, if you prefer it to name the crate the marker came from.
+/// The attribute is removed before `rustc` sees the function, so it needs
+/// nothing in scope.
+///
+/// | Option | Effect | Go SDK equivalent |
+/// | --- | --- | --- |
+/// | `default = <literal>` | Value used when the caller omits the argument | `+default` |
+/// | `default_path = "..."` | For `Directory`/`File`, load from the context directory | `+defaultPath` |
+/// | `ignore = ["...", ...]` | Patterns to skip when loading a contextual argument | `+ignore` |
+///
+/// `default_path` and `ignore` are parsed and forwarded, but the engine accepts
+/// them only on object types — `Directory` and `File` — so using either today is
+/// a compile error naming the parameter. They become usable with the generated
+/// bindings.
+/// | `doc = "..."` | The argument's description | a doc comment |
+/// | `deprecated = "..."` | Marks the argument deprecated, with a migration note | `+deprecated` |
+///
+/// `doc` is the one place this cannot mirror Go: Rust has no doc comments on
+/// parameters, so the description has to be an option.
+///
+/// # Optionality
+///
+/// An argument is optional when its type is `Option<T>`, or when it has a
+/// `default` — a defaulted argument the caller may omit is optional by
+/// construction. There is no `+optional` marker to write.
+///
+/// # Supported types
+///
+/// `string` (and `String`/`&str`), `int`, and `bool`, plus `Option<T>` of each.
+/// A function returning nothing maps to the engine's `VOID_KIND`.
+///
+/// Object types such as `Container` and `Directory` are **not** supported yet:
+/// they need the generated bindings, which are still a placeholder. Using one
+/// is a compile error naming the type, rather than a confusing failure further
+/// along.
 #[proc_macro_attribute]
 pub fn object(_attr: TokenStream, item: TokenStream) -> TokenStream {
     match expand(item.clone()) {
@@ -108,7 +209,10 @@ fn is_dagger_attr(stream: TokenStream) -> bool {
             _ => break,
         }
     }
-    path == "dagger" || path == "dagger::function" || path == "dagger_sdk::function"
+    matches!(
+        path.as_str(),
+        "dagger" | "dagger_sdk" | "dagger::function" | "dagger_sdk::function"
+    )
 }
 
 /// Options read from `#[dagger(...)]` on a parameter.
@@ -124,7 +228,12 @@ struct Options {
 /// Read the `#[dagger(...)]` options attached to a parameter.
 fn options_of(attrs: &[Attr]) -> Result<Options, String> {
     let mut options = Options::default();
-    for attr in attrs.iter().filter(|a| a.path == "dagger") {
+    // Both spellings are accepted: `#[dagger(...)]` reads best, and
+    // `#[dagger_sdk(...)]` matches the crate the marker is imported from.
+    for attr in attrs
+        .iter()
+        .filter(|a| a.path == "dagger" || a.path == "dagger_sdk")
+    {
         for part in split_commas(&attr.args) {
             let key = match part.first() {
                 Some(TokenTree::Ident(id)) => id.to_string(),
@@ -320,6 +429,19 @@ fn function_def(f: &Function) -> Result<String, String> {
     for param in &f.params {
         let options = options_of(&param.attrs)?;
         let kind = kind_of(&param.ty)?;
+
+        // The engine rejects these on anything but an object type — "can only
+        // set default path for Object, not STRING_KIND" — and it does so at
+        // module load, which is a bad place to learn about a typo. Since no
+        // object type is supported yet, catch it here where the message can
+        // name the parameter.
+        if !options.default_path.is_empty() || !options.ignore.is_empty() {
+            let which = if options.default_path.is_empty() { "ignore" } else { "default_path" };
+            return Err(format!(
+                "`{which}` on `{}` applies only to Directory and File arguments; those are object types, which need the generated bindings and are not supported yet",
+                param.name
+            ));
+        }
         // A defaulted argument is optional whether or not it is an Option<T>:
         // the caller may leave it out and get the default.
         let optional = kind.optional || !options.default_value.is_empty();
