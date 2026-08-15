@@ -1,0 +1,3 @@
+[["version","1"]]
+["","git.head",["https://github.com/dagger/sdk-sdk"],"e1747f4b6221fa24da080701e027243e0cc5fa33","float"]
+["","git.ref",["https://github.com/dagger/polyfill","main"],"ec3ea84a2351b4beb06ecece951f2e5ef66509ff","float"]
