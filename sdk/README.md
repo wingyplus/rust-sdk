@@ -8,7 +8,7 @@ API bindings.
 ├── Cargo.toml     the `dagger-sdk` crate — no_std, depends on goish
 ├── src/lib.rs     session parameters and the module entrypoint
 ├── src/gen/       API bindings; replaced wholesale by `dagger generate`
-└── codegen/       host binary: introspection schema in, `src/gen/` out
+└── codegen/       no_std binary: introspection schema in, `src/gen/` out
 ```
 
 This crate is never consumed from crates.io or by git ref. `dagger generate`
@@ -17,10 +17,12 @@ bindings generated from that module's own schema, and the module depends on it
 by path. Modules commit the result; the runtime builds from it and never
 regenerates it.
 
-`codegen/` is deliberately dependency-free and deliberately *not* `no_std` — it
-is an ordinary hosted binary built for the build host, so it must not inherit
-the module's bare-metal link flags. Keeping it free of crates.io dependencies
-means `dagger generate` needs no registry access beyond the toolchain image.
+`codegen/` is `no_std` and built on goish like everything else here, so it
+carries its own `.cargo/config.toml` and its binary lands under the target tuple
+rather than directly in `release/` — `mod.dang` accounts for that when it copies
+the binary out. goish is its only dependency, so `dagger generate` needs no
+crates.io access beyond the toolchain image, and the schema parsing the real
+generator needs comes from goish's `encoding/json` rather than serde.
 
 ## Working on it standalone
 

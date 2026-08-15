@@ -113,11 +113,12 @@ written against a future built-in runtime keeps working.
 
 Two invariants hold the pieces together, and both are load-bearing:
 
-- **goish is pinned by git rev**, in `sdk/Cargo.toml` and in every
-  `templates/*/Cargo.toml.tmpl`. It is not on crates.io. Both pins must name the
-  same rev — cargo treats two revs as two different crates, and linking a module
-  against two copies of the goish runtime fails on duplicate symbols. Bump them
-  together.
+- **goish is pinned by git rev**, in `sdk/Cargo.toml`, `sdk/codegen/Cargo.toml`
+  and every `templates/*/Cargo.toml.tmpl`. It is not on crates.io. The pins that
+  meet in one build — the SDK crate's and the module's — must name the same rev,
+  since cargo treats two revs as two different crates and linking a module
+  against two copies of the goish runtime fails on duplicate symbols. Bump all
+  of them together.
 - **The binary's name is derived, not configured.** `rustCrateName` in
   `helpers/render-template/main.go` writes the cargo `[package]` name at init
   time; `toRustCrateName` in `runtime/main.dang` recomputes it at call time to
@@ -160,7 +161,8 @@ What is stubbed:
 - **`sdk/codegen`.** It reads and validates the introspection schema and emits a
   placeholder module. The real output should mirror the Go SDK's
   `dagger.gen.go`: one type per GraphQL object, each method appending to a
-  lazily-built selection sent only when a leaf value is requested.
+  lazily-built selection sent only when a leaf value is requested. Parsing the
+  schema is goish's `encoding/json`; no serde equivalent is needed.
 - **Function registration**, the one piece with no direct Go analogue. The Go
   SDK recovers function signatures by parsing the user's package at codegen
   time; Rust would use proc-macros instead.

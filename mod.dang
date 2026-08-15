@@ -3,6 +3,13 @@
 # toolchain that generated it.
 let rustImage = "rust:1.90-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f"
 
+# Everything in this repository is a goish binary, so codegen links for the same
+# tuple its own .cargo/config.toml names — see runtime/main.dang.
+let cargoTarget = "x86_64-unknown-linux-gnu"
+let cargoTargetDir = "/codegen-target"
+let cargoRegistryDir = "/usr/local/cargo/registry"
+let cargoGitDir = "/usr/local/cargo/git"
+
 """
 A Dagger module that uses the Rust SDK.
 """
@@ -126,9 +133,9 @@ type Mod {
   """
   Build the engine-free bindings generator.
 
-  It is an ordinary hosted Rust binary, built from `sdk/codegen` for the build
-  host — unlike the SDK crate itself, which is `no_std` and cross-linked by the
-  runtime.
+  Like the SDK crate it generates into, `sdk/codegen` is `no_std` and built on
+  goish, so it carries its own `.cargo/config.toml` and lands under the target
+  tuple rather than directly in `release/`.
   """
   let codegenBuilder: Container! {
     container
@@ -138,13 +145,19 @@ type Mod {
       .withWorkdir("/codegen")
       # Build outside the source tree: a cache mount inside /codegen would sit
       # under the directory written above it.
-      .withEnvVariable("CARGO_TARGET_DIR", "/codegen-target")
-      .withMountedCache("/usr/local/cargo/registry", cacheVolume("rust-sdk-cargo-registry"))
-      .withMountedCache("/codegen-target", cacheVolume("rust-sdk-codegen-target"))
-      .withExec(["cargo", "build", "--release"])
-      .withExec(["cp", "/codegen-target/release/codegen", "/usr/local/bin/codegen"])
-      .withoutMount("/codegen-target")
-      .withoutMount("/usr/local/cargo/registry")
+      .withEnvVariable("CARGO_TARGET_DIR", cargoTargetDir)
+      .withEnvVariable("CARGO_NET_GIT_FETCH_WITH_CLI", "true")
+      # goish is a git dependency, and cargo caches those under $CARGO_HOME/git
+      # rather than $CARGO_HOME/registry. Both are needed to avoid re-cloning it
+      # on every generate.
+      .withMountedCache(cargoRegistryDir, cacheVolume("rust-sdk-cargo-registry"))
+      .withMountedCache(cargoGitDir, cacheVolume("rust-sdk-cargo-git"))
+      .withMountedCache(cargoTargetDir, cacheVolume("rust-sdk-codegen-target"))
+      .withExec(["cargo", "build", "--release", "--locked"])
+      .withExec(["cp", cargoTargetDir + "/" + cargoTarget + "/release/codegen", "/usr/local/bin/codegen"])
+      .withoutMount(cargoTargetDir)
+      .withoutMount(cargoRegistryDir)
+      .withoutMount(cargoGitDir)
   }
 
   """

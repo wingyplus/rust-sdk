@@ -2,6 +2,8 @@
 name = "codegen"
 version = "0.1.0"
 edition = "2021"
+# goish's floor.
+rust-version = "1.86"
 publish = false
 description = "Generates the Dagger Rust SDK's API bindings from an introspection schema."
 
@@ -9,8 +11,18 @@ description = "Generates the Dagger Rust SDK's API bindings from an introspectio
 name = "codegen"
 path = "src/main.rs"
 
-# Deliberately dependency-free. This is an ordinary hosted binary built on the
-# build host, not with the module's bare-metal link flags, and keeping it free
-# of crates.io means `dagger generate` needs no registry access beyond the
-# toolchain image.
 [dependencies]
+# The only dependency, and the same one the SDK crate and every module use.
+# Pinned by git rev: goish is not published to crates.io. Keep this rev in step
+# with ../Cargo.toml and templates/*/Cargo.toml.tmpl.
+goish = { git = "https://github.com/cogentica-ai/goish", rev = "ff061453ffd2533bb22ea68c8ccb176616aa4b5e" }
+
+# goish supplies its own runtime and never unwinds.
+[profile.release]
+panic = "abort"
+lto = true
+strip = true
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"
