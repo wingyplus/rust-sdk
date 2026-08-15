@@ -10,32 +10,38 @@
 
 #![no_std]
 #![no_main]
-// The functions below are not reachable from `main` yet: the Rust SDK scaffold
-// has no way to register them with the engine, so nothing dispatches to them.
-// Remove this once function registration lands.
-#![allow(dead_code)]
 
 use goish::{fmt, string};
 
 /// A generated module for {{ .ModuleType }} functions.
 pub struct {{ .ModuleType }};
 
+#[dagger_sdk::object]
 impl {{ .ModuleType }} {
-    /// Returns a container that echoes whatever string argument is provided.
+    /// Returns the string argument, echoed back.
+    #[dagger_sdk::function]
     pub fn container_echo(&self, string_arg: string) -> string {
         fmt::Sprintf!("echo %s", string_arg)
     }
 
-    /// Returns lines that match a pattern in the files of the provided directory.
-    pub fn grep_dir(&self, directory_arg: string, pattern: string) -> string {
+    /// Returns the pattern and directory it would grep.
+    ///
+    /// Arguments carry their options in `#[dagger(...)]`: `default`,
+    /// `default_path`, `ignore`, `doc` and `deprecated`. An `Option<T>`
+    /// argument is optional, as is any argument with a default.
+    #[dagger_sdk::function]
+    pub fn grep_dir(
+        &self,
+        #[dagger(doc = "Directory to search")] directory_arg: string,
+        #[dagger(default = "hello")] pattern: string,
+    ) -> string {
         fmt::Sprintf!("grep -R %s %s", pattern, directory_arg)
     }
 }
 
 #[goish::main]
 fn main() {
-    // Answers the engine's pending function call. Registration works, so the
-    // module loads and serves its API; the functions above are not wired to it
-    // yet. See dagger_sdk::serve.
-    dagger_sdk::serve("{{ .ModuleType }}")
+    // Answers the engine's pending function call: registers the object and its
+    // functions, or dispatches to one of them.
+    dagger_sdk::serve::<{{ .ModuleType }}>()
 }

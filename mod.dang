@@ -18,7 +18,7 @@ let genDir = "dagger_sdk"
 # The files a consuming module needs from sdk/ in order to compile: the crate
 # manifest, its library sources and the licence. Everything dev-only — the
 # codegen binary, the README — stays out.
-let vendoredSdkFiles: [String!]! = ["LICENSE", "Cargo.toml", "src/**/*.rs"]
+let vendoredSdkFiles: [String!]! = ["LICENSE", "Cargo.toml", "src/**/*.rs", "macros/Cargo.toml", "macros/src/**/*.rs"]
 
 """
 A Dagger module that uses the Rust SDK.

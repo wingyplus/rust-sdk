@@ -1,0 +1,24 @@
+[package]
+name = "dagger-sdk-macros"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+license = "Apache-2.0"
+description = "Attribute macros that declare a Dagger module's objects and functions."
+repository = "https://github.com/wingyplus/rust-sdk"
+
+[lib]
+proc-macro = true
+path = "src/lib.rs"
+
+# Deliberately empty, like goish-macros. A proc-macro crate is built for the
+# host, so syn/quote would be safe to link here — but this repository takes no
+# crates.io dependencies anywhere, so the parsing is hand-rolled over
+# proc_macro::TokenTree and the output is built as text and re-parsed.
+#
+# This is the one crate here that is NOT no_std, and cannot be: `proc_macro` is
+# std-only and runs inside rustc on the build host. goish supplies `_start` and a
+# runtime for the target binary, so it has nothing to offer a compiler plugin.
+# The code this crate *emits* is no_std goish throughout — see the generated
+# `impl Object`, which speaks only in `goish::gostring::string`.
+[dependencies]

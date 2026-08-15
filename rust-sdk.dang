@@ -4,7 +4,7 @@
 # them at init, that one refreshes them on generate. If they drift, a seeded
 # module and a generated one disagree about what a module contains.
 let genDir = "dagger_sdk"
-let vendoredSdkFiles: [String!]! = ["LICENSE", "Cargo.toml", "src/**/*.rs"]
+let vendoredSdkFiles: [String!]! = ["LICENSE", "Cargo.toml", "src/**/*.rs", "macros/Cargo.toml", "macros/src/**/*.rs"]
 
 """
 Manage Dagger modules that use the Rust SDK.

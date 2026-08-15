@@ -16,6 +16,9 @@ path = "src/lib.rs"
 # pinned in templates/*/Cargo.toml.tmpl so cargo unifies the two into one
 # checkout — they must be bumped together.
 goish = { git = "https://github.com/cogentica-ai/goish", rev = "ff061453ffd2533bb22ea68c8ccb176616aa4b5e" }
+# Host-built proc-macro crate; see its Cargo.toml for why it is the one non-no_std
+# piece here. Vendored alongside this crate into every module.
+dagger-sdk-macros = { path = "./macros" }
 
 # No [profile] sections here on purpose. This crate is always consumed as a path
 # dependency of a module, where cargo ignores a non-root package's profiles and

@@ -36,6 +36,15 @@
 /// whole module with bindings derived from the engine's introspection schema.
 pub mod gen;
 
+mod module;
+
+pub use module::{
+    encode_bool, encode_int, encode_string, encode_void, ArgDef, Arguments, FunctionDef, Object,
+};
+
+/// Declare a module's root object and the functions it serves.
+pub use dagger_sdk_macros::{function, object};
+
 use goish::encoding::base64;
 use goish::encoding::json;
 use goish::net::http;
@@ -176,7 +185,7 @@ fn field_string(value: &json::Value, path: &[&'static str]) -> Result<string, st
 /// Used for both the GraphQL arguments and the JSON request body, which share
 /// escaping rules. Going through `json::Marshal` rather than hand-rolling the
 /// escapes keeps module IDs — opaque, engine-chosen text — safe to embed.
-fn json_string(value: &string) -> string {
+pub(crate) fn json_string(value: &string) -> string {
     let (encoded, err) = json::Marshal(&json::Value::String(value.clone()));
     if err != nil {
         fail(string("encoding a query argument: ") + err.Error());
@@ -196,14 +205,10 @@ pub fn fail(message: string) -> ! {
 
 /// Serve this module: answer the engine's pending function call.
 ///
-/// `object_name` is the module's root object — the PascalCase form of the
-/// Dagger module name, which is what the engine expects to find.
-///
-/// Registration is implemented, so the module loads and `dagger api functions`
-/// succeeds against it. Invocation is not: nothing can declare a function yet,
-/// so a call to one exits with a message rather than hanging or returning a
-/// wrong answer.
-pub fn serve(object_name: &'static str) -> ! {
+/// `T` is the module's root object, declared with `#[dagger::object]`. The macro
+/// emits the [`Object`] impl this walks — the function table for registration,
+/// and the dispatch for an invocation.
+pub fn serve<T: Object>() -> ! {
     let session = match Session::from_env() {
         Some(s) => s,
         None => fail(string(
@@ -211,19 +216,27 @@ pub fn serve(object_name: &'static str) -> ! {
         )),
     };
 
-    let parent_name = match session
-        .query(&string("{currentFunctionCall{parentName}}"))
-        .and_then(|data| field_string(&data, &["currentFunctionCall", "parentName"]))
-    {
+    let call = match session.query(&string(
+        "{currentFunctionCall{name,parentName,inputArgs{name,value}}}",
+    )) {
+        Ok(data) => data,
+        Err(message) => fail(message),
+    };
+
+    let parent_name = match field_string(&call, &["currentFunctionCall", "parentName"]) {
         Ok(name) => name,
         Err(message) => fail(message),
     };
 
-    if parent_name.Len() != 0 {
-        fail(string("this module serves no functions yet, but the engine asked for one on ") + parent_name);
-    }
+    // An empty parentName is the engine asking what this module serves; anything
+    // else is a call against that object.
+    let result = if parent_name.Len() == 0 {
+        register::<T>(&session)
+    } else {
+        dispatch::<T>(&session, &call)
+    };
 
-    match register(&session, object_name) {
+    match result.and_then(|value| return_value(&session, &value)) {
         Ok(()) => os::Exit(0),
         Err(message) => fail(message),
     }
@@ -231,28 +244,176 @@ pub fn serve(object_name: &'static str) -> ! {
 
 /// Describe the module to the engine and return the description's ID.
 ///
-/// The shape mirrors every other SDK: build a `TypeDef` for the root object,
-/// attach it to a `Module`, and hand back the module's ID as the call's return
-/// value. The object carries no functions yet.
-fn register(session: &Session, object_name: &'static str) -> Result<(), string> {
-    let name = string(object_name);
+/// Build a `TypeDef` for the root object, hang every declared function off it,
+/// attach it to a `Module`, and hand back the module's ID.
+fn register<T: Object>(session: &Session) -> Result<string, string> {
+    let mut object = string("{typeDef{withObject(name:") + json_string(&string(T::NAME)) + "){";
+    let mut closers = string("");
 
-    let type_def = session.query(
-        &(string("{typeDef{withObject(name:") + json_string(&name) + "){id}}}"),
-    )?;
-    let type_def_id = field_string(&type_def, &["typeDef", "withObject", "id"])?;
+    for def in T::functions() {
+        let function_id = build_function(session, def)?;
+        object = object + "withFunction(function:" + json_string(&function_id) + "){";
+        closers = closers + "}";
+    }
 
-    let module = session.query(
-        &(string("{module{withObject(object:") + json_string(&type_def_id) + "){id}}}"),
-    )?;
+    let query = object + "id}" + closers + "}}";
+    let type_def = session.query(&query)?;
+    let type_def_id = nested_id(&type_def, "typeDef", "withObject", T::functions().len())?;
+
+    let module = session
+        .query(&(string("{module{withObject(object:") + json_string(&type_def_id) + "){id}}}"))?;
     let module_id = field_string(&module, &["module", "withObject", "id"])?;
 
-    // returnValue takes a JSON scalar, so the ID is JSON-encoded and that
-    // encoding is then embedded as a GraphQL string — hence the double pass.
-    let encoded = json_string(&module_id);
-    session.query(
-        &(string("{currentFunctionCall{returnValue(value:") + json_string(&encoded) + ")}}"),
-    )?;
+    // Both paths hand back "a JSON document", so the ID is JSON-encoded here to
+    // match what dispatch returns from encode_*. returnValue then embeds it as a
+    // GraphQL string exactly once.
+    Ok(json_string(&module_id))
+}
 
+/// Build one `Function` and return its ID.
+fn build_function(session: &Session, def: &FunctionDef) -> Result<string, string> {
+    let return_type = build_type_def(session, def.return_kind, false)?;
+
+    let mut query = string("{function(name:")
+        + json_string(&string(def.name))
+        + ",returnType:"
+        + json_string(&return_type)
+        + "){";
+    let mut depth: usize = 0;
+
+    if !def.doc.is_empty() {
+        query = query + "withDescription(description:" + json_string(&string(def.doc)) + "){";
+        depth += 1;
+    }
+
+    for arg in def.args {
+        let arg_type = build_type_def(session, arg.kind, arg.optional)?;
+        query = query
+            + "withArg(name:"
+            + json_string(&string(arg.name))
+            + ",typeDef:"
+            + json_string(&arg_type);
+        if !arg.doc.is_empty() {
+            query = query + ",description:" + json_string(&string(arg.doc));
+        }
+        if !arg.default_value.is_empty() {
+            // defaultValue is a JSON scalar, so the already-encoded JSON is
+            // embedded as a GraphQL string.
+            query = query + ",defaultValue:" + json_string(&string(arg.default_value));
+        }
+        if !arg.default_path.is_empty() {
+            query = query + ",defaultPath:" + json_string(&string(arg.default_path));
+        }
+        if !arg.ignore.is_empty() {
+            query = query + ",ignore:[";
+            let mut first = true;
+            for pattern in arg.ignore {
+                if !first {
+                    query = query + ",";
+                }
+                query = query + json_string(&string(*pattern));
+                first = false;
+            }
+            query = query + "]";
+        }
+        if !arg.deprecated.is_empty() {
+            query = query + ",deprecated:" + json_string(&string(arg.deprecated));
+        }
+        query = query + "){";
+        depth += 1;
+    }
+
+    let mut closers = string("");
+    for _ in 0..depth {
+        closers = closers + "}";
+    }
+    let data = session.query(&(query + "id}" + closers + "}"))?;
+    nested_id(&data, "function", "", depth)
+}
+
+/// Build a `TypeDef` of one kind and return its ID.
+fn build_type_def(session: &Session, kind: &str, optional: bool) -> Result<string, string> {
+    // `kind` is a GraphQL enum literal, so it is spliced unquoted. It only ever
+    // comes from the macro's fixed set, never from user text.
+    let query = if optional {
+        string("{typeDef{withKind(kind:") + kind + "){withOptional(optional:true){id}}}}"
+    } else {
+        string("{typeDef{withKind(kind:") + kind + "){id}}}"
+    };
+    let data = session.query(&query)?;
+    if optional {
+        field_string(&data, &["typeDef", "withKind", "withOptional", "id"])
+    } else {
+        field_string(&data, &["typeDef", "withKind", "id"])
+    }
+}
+
+/// Walk `depth` repetitions of a chained field down to the `id` it wraps.
+///
+/// Chained builder calls nest in the response exactly as they do in the query,
+/// so `withFunction(...){withFunction(...){id}}` comes back doubly wrapped.
+fn nested_id(
+    data: &json::Value,
+    root: &'static str,
+    repeated: &'static str,
+    depth: usize,
+) -> Result<string, string> {
+    let mut current = if root.is_empty() {
+        data.clone()
+    } else {
+        field(data, &[root])?
+    };
+    if !repeated.is_empty() {
+        current = field(&current, &[repeated])?;
+    }
+    for _ in 0..depth {
+        current = match current.AsObject() {
+            Some(object) => {
+                let mut found = json::Value::Null;
+                // Each level has exactly one field, whatever it was named.
+                let keys = object.Keys();
+                for i in 0..keys.Len() {
+                    let (value, ok) = object.Get(keys[i as usize].clone());
+                    if ok {
+                        found = value;
+                    }
+                }
+                found
+            }
+            None => return Err(string("unexpected shape in the engine response")),
+        };
+    }
+    match current.AsObject() {
+        Some(object) => {
+            let (id, ok) = object.Get("id");
+            if !ok {
+                return Err(string("engine response is missing id"));
+            }
+            match id.AsString() {
+                Some(s) => Ok(s.clone()),
+                None => Err(string("id was not a string")),
+            }
+        }
+        None => match current.AsString() {
+            Some(s) => Ok(s.clone()),
+            None => Err(string("engine response is missing id")),
+        },
+    }
+}
+
+/// Call the requested function and return its JSON-encoded result.
+fn dispatch<T: Object>(session: &Session, call: &json::Value) -> Result<string, string> {
+    let _ = session;
+    let name = field_string(call, &["currentFunctionCall", "name"])?;
+    let input_args = field(call, &["currentFunctionCall", "inputArgs"])?;
+    let args = Arguments::new(input_args);
+    T::invoke(&name, &args)
+}
+
+/// Hand a JSON-encoded result back to the engine.
+fn return_value(session: &Session, value: &string) -> Result<(), string> {
+    session.query(
+        &(string("{currentFunctionCall{returnValue(value:") + json_string(value) + ")}}"),
+    )?;
     Ok(())
 }

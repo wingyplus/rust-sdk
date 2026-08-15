@@ -14,13 +14,13 @@ loader and no garbage collector. A module links to one static binary.
 
 Backed by [`github.com/dagger/polyfill`](https://github.com/dagger/polyfill).
 
-> [!WARNING]
-> **This is a scaffold.** The module lifecycle works end to end — `dagger sdk
-> install`, `dagger module init rust`, `dagger generate`, and the module build —
-> and a scaffolded module produces a running static binary. What is *not* built
-> yet is the client itself: there is no session transport, no GraphQL query
-> builder, and no function registration, so invoking a module function exits
-> non-zero with a message saying so. See [Status](#status).
+> [!NOTE]
+> **Working, with one gap.** The whole lifecycle runs: `dagger sdk install`,
+> `dagger module init rust`, `dagger generate`, and `dagger call` against a
+> module's functions, which execute as a single static binary. The gap is the
+> other direction — a module cannot yet call the engine API, because the
+> generated bindings are still a placeholder, so functions are limited to
+> scalars. See [Status](#status).
 
 ## What's in here
 
@@ -155,17 +155,20 @@ What works today:
 
 What is stubbed:
 
-- **`dagger-sdk`'s client.** `Session::from_env` reads the engine's session
-  parameters; nothing yet uses them. `serve()` exits non-zero with an
-  explanatory message.
+- **The client's typed API.** A module can be *called*, but it cannot yet *call*
+  the engine back: there is no `dag()`, because that needs the generated
+  bindings below. Functions are limited to `string`, `int` and `bool`.
 - **`sdk/codegen`.** It reads and validates the introspection schema and emits a
   placeholder module. The real output should mirror the Go SDK's
   `dagger.gen.go`: one type per GraphQL object, each method appending to a
   lazily-built selection sent only when a leaf value is requested. Parsing the
   schema is goish's `encoding/json`; no serde equivalent is needed.
-- **Function registration**, the one piece with no direct Go analogue. The Go
-  SDK recovers function signatures by parsing the user's package at codegen
-  time; Rust would use proc-macros instead.
+
+Function declaration and dispatch **work**: `#[dagger::object]` and
+`#[dagger::function]` read signatures at compile time and emit a static table
+the entrypoint walks, with argument options in `#[dagger(...)]`. This is the one
+piece with no Go analogue — the Go SDK recovers signatures by parsing the user's
+package — so it is proc-macros rather than a port.
 
 `initClient` (typed client generation for non-module consumers) is an optional
 part of the SDK contract and is not implemented.

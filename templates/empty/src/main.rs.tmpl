@@ -2,16 +2,14 @@
 
 #![no_std]
 #![no_main]
-// Nothing is reachable from `main` yet: the Rust SDK scaffold has no way to
-// register functions with the engine. Remove this once registration lands.
-#![allow(dead_code)]
 
 /// A generated module for {{ .ModuleType }} functions.
 pub struct {{ .ModuleType }};
 
+#[dagger_sdk::object]
 impl {{ .ModuleType }} {}
 
 #[goish::main]
 fn main() {
-    dagger_sdk::serve("{{ .ModuleType }}")
+    dagger_sdk::serve::<{{ .ModuleType }}>()
 }
