@@ -59,6 +59,13 @@ nothing to do with the module runtime.
   `$CARGO_HOME/registry`.** goish is the only real dependency and it is a git
   dep, so caching just the registry re-clones it on every build. Both mounts
   appear in `mod.dang` and `runtime/main.dang`.
+- **Reserved-identifier checking is asymmetric on purpose.** The derived *type*
+  name is rejected when it is a Rust keyword, because it becomes a `struct`
+  declaration and `pub struct Self;` will not parse. The derived *crate* name is
+  not, because it is only ever a cargo package name, a bin target name and a
+  filename — a module named `crate` renders, builds and runs. (`cargo new`
+  refuses such names only because it also creates a lib target, which these
+  templates do not.) Both halves are pinned by tests; don't "fix" the crate side.
 - **The engine owns module config.** `initModule` must not write `dagger.json`
   or `dagger-module.toml`; it returns only SDK-owned files. The engine merges in
   its own bookkeeping.

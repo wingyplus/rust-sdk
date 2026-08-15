@@ -160,6 +160,57 @@ func TestRunRejectsNameStartingWithDigit(t *testing.T) {
 	}
 }
 
+// TestRunRejectsReservedTypeName covers names whose Rust type name is reserved.
+// `pub struct Self;` is a parse error ("expected identifier, found keyword
+// `Self`"), so the scaffold has to refuse rather than emit a project that cannot
+// build. Every spelling that lowercases to "self" lands on the same type name.
+func TestRunRejectsReservedTypeName(t *testing.T) {
+	for _, name := range []string{"self", "Self", "SELF", "-self-", "_self_"} {
+		t.Run(name, func(t *testing.T) {
+			if got := rustTypeName(name); got != "Self" {
+				t.Fatalf("precondition: rustTypeName(%q) = %q, want %q", name, got, "Self")
+			}
+			if err := run([]string{name, t.TempDir(), filepath.Join(t.TempDir(), "out")}); err == nil {
+				t.Errorf("expected an error for module name %q, which yields the type name Self", name)
+			}
+		})
+	}
+}
+
+// TestRunAllowsKeywordCrateName pins the other half of the rule. These names
+// produce a crate name that is a Rust keyword, but the crate name is only ever a
+// cargo package name, a bin target name and a filename — never an identifier —
+// so cargo builds them and the scaffold must not reject them. Verified by
+// building a bin crate named `crate`, `self`, `type` and `move`.
+func TestRunAllowsKeywordCrateName(t *testing.T) {
+	for _, tc := range []struct{ name, crate, typeName string }{
+		{"crate", "crate", "Crate"},
+		{"type", "type", "Type"},
+		{"move", "move", "Move"},
+		{"box", "box", "Box"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := rustCrateName(tc.name); got != tc.crate {
+				t.Fatalf("precondition: rustCrateName(%q) = %q, want %q", tc.name, got, tc.crate)
+			}
+			if !rustKeywords[tc.crate] {
+				t.Fatalf("precondition: %q is expected to be a Rust keyword", tc.crate)
+			}
+
+			tmplDir := t.TempDir()
+			outDir := filepath.Join(t.TempDir(), "out")
+			write(t, filepath.Join(tmplDir, "Cargo.toml.tmpl"), "name = \"{{ .ModuleCrate }}\"\n")
+			write(t, filepath.Join(tmplDir, "src", "main.rs.tmpl"), "pub struct {{ .ModuleType }};\n")
+
+			if err := run([]string{tc.name, tmplDir, outDir}); err != nil {
+				t.Fatalf("run(%q): %v", tc.name, err)
+			}
+			assertFile(t, filepath.Join(outDir, "Cargo.toml"), "name = \""+tc.crate+"\"\n")
+			assertFile(t, filepath.Join(outDir, "src", "main.rs"), "pub struct "+tc.typeName+";\n")
+		})
+	}
+}
+
 func write(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -44,6 +44,32 @@ var (
 	reNonAlphanumeric = regexp.MustCompile(`[^A-Za-z0-9]+`)
 )
 
+// rustKeywords is every word Rust reserves as of the 2024 edition: the strict
+// keywords, the reserved-for-future-use set, and the edition-specific additions.
+// Raw identifiers are not an escape hatch for all of them — `crate`, `self`,
+// `super` and `Self` cannot be written `r#`-prefixed — so a name landing here is
+// rejected rather than escaped.
+var rustKeywords = map[string]bool{
+	// Strict.
+	"as": true, "break": true, "const": true, "continue": true, "crate": true,
+	"else": true, "enum": true, "extern": true, "false": true, "fn": true,
+	"for": true, "if": true, "impl": true, "in": true, "let": true,
+	"loop": true, "match": true, "mod": true, "move": true, "mut": true,
+	"pub": true, "ref": true, "return": true, "self": true, "Self": true,
+	"static": true, "struct": true, "super": true, "trait": true, "true": true,
+	"type": true, "unsafe": true, "use": true, "where": true, "while": true,
+	// Strict from the 2018 edition on.
+	"async": true, "await": true, "dyn": true,
+	// Reserved for future use.
+	"abstract": true, "become": true, "box": true, "do": true, "final": true,
+	"macro": true, "override": true, "priv": true, "typeof": true,
+	"unsized": true, "virtual": true, "yield": true,
+	// Reserved from the 2018 edition on.
+	"try": true,
+	// Reserved from the 2024 edition on.
+	"gen": true,
+}
+
 // rustCrateName mirrors toRustCrateName in runtime/main.dang.
 func rustCrateName(name string) string {
 	s := reAcronymBoundary.ReplaceAllString(name, "${1}_${2}")
@@ -88,9 +114,25 @@ func run(args []string) error {
 		return fmt.Errorf("module name %q yields the crate name %q, which starts with a digit", moduleName, crateName)
 	}
 
+	// The type name becomes a `struct` declaration in the generated main.rs, so
+	// a reserved word there is a hard compile error. In practice only `Self`
+	// reaches this — every other Rust keyword is lowercase, and the type name is
+	// capitalized per segment — but checking the whole set keeps the rule honest
+	// if the derivation ever changes.
+	//
+	// The crate name is deliberately *not* checked against the same set. It only
+	// ever appears as a cargo package name, a bin target name and a filename,
+	// never as a Rust identifier: a module named `crate`, `self`, `type` or
+	// `move` builds and produces a binary. `cargo new` refuses those names
+	// because it also creates a lib target, which these templates do not.
+	typeName := rustTypeName(moduleName)
+	if rustKeywords[typeName] {
+		return fmt.Errorf("module name %q yields the Rust type name %q, which is a reserved keyword; pick another name", moduleName, typeName)
+	}
+
 	data := map[string]string{
 		"ModuleName":  moduleName,
-		"ModuleType":  rustTypeName(moduleName),
+		"ModuleType":  typeName,
 		"ModuleCrate": crateName,
 	}
 
