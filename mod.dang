@@ -10,6 +10,16 @@ let cargoTargetDir = "/codegen-target"
 let cargoRegistryDir = "/usr/local/cargo/registry"
 let cargoGitDir = "/usr/local/cargo/git"
 
+# Directory the vendored SDK is written to, relative to a module root. Shared
+# with rust-sdk.dang, which seeds it at init so a new module builds before it
+# has ever been generated.
+let genDir = "dagger_sdk"
+
+# The files a consuming module needs from sdk/ in order to compile: the crate
+# manifest, its library sources and the licence. Everything dev-only — the
+# codegen binary, the README — stays out.
+let vendoredSdkFiles: [String!]! = ["LICENSE", "Cargo.toml", "src/**/*.rs"]
+
 """
 A Dagger module that uses the Rust SDK.
 """
@@ -29,11 +39,6 @@ type Mod {
   Marker filename that skips generate when found at or above this module root.
   """
   let skipGenerateFilename: String!
-
-  """
-  Directory the vendored SDK is written to, relative to the module root.
-  """
-  let genDir: String! = "dagger_sdk"
 
   """
   Module root relative to the client's cwd.
@@ -91,8 +96,8 @@ type Mod {
       }
 
       before
-        .withoutDirectory(joinPath(rootPath, genDir))
-        .withDirectory(joinPath(rootPath, genDir), vendored)
+        .withoutDirectory(Path(rootPath).join(Path(genDir)).string)
+        .withDirectory(Path(rootPath).join(Path(genDir)).string, vendored)
         .changes(before)
     }
   }
@@ -114,7 +119,7 @@ type Mod {
   """
   let vendoredSdk(introspectionJSON: File!): Directory! {
     sdkSourceDir
-      .filter(include: ["LICENSE", "Cargo.toml", "src/**/*.rs"])
+      .filter(include: vendoredSdkFiles)
       .withoutDirectory("src/gen")
       .withDirectory("src/gen", generatedBindings(introspectionJSON))
   }
@@ -158,12 +163,5 @@ type Mod {
       .withoutMount(cargoTargetDir)
       .withoutMount(cargoRegistryDir)
       .withoutMount(cargoGitDir)
-  }
-
-  """
-  Join a module path with a sub-path, handling the root (".") module.
-  """
-  let joinPath(modPath: String!, sub: String!): String! {
-    if (modPath == ".") { sub } else { modPath + "/" + sub }
   }
 }

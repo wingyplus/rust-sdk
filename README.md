@@ -52,10 +52,10 @@ dagger module init rust my-module
 dagger generate
 ```
 
-`initModule` only seeds the SDK-owned template files; the engine writes the
-module config and workspace entries. **Run `generate` afterwards** — a fresh
-module's `Cargo.toml` depends on `./dagger_sdk`, which generation writes, so it
-does not build until then.
+`initModule` seeds the SDK-owned template files, including a working
+`dagger_sdk/`; the engine writes the module config and workspace entries. The
+module builds and loads straight away — `generate` then replaces its bindings
+with ones derived from your engine's schema.
 
 Pick a starter with `--template`:
 

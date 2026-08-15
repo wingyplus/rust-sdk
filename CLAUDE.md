@@ -66,6 +66,18 @@ nothing to do with the module runtime.
   filename — a module named `crate` renders, builds and runs. (`cargo new`
   refuses such names only because it also creates a lib target, which these
   templates do not.) Both halves are pinned by tests; don't "fix" the crate side.
+- **`initModule` seeds `dagger_sdk/`, and that is not a convenience.** The engine
+  discovers a workspace's generators by *loading* every module in it, and loading
+  a Rust module builds it. If a scaffolded module's `Cargo.toml` named a
+  `dagger_sdk` that did not exist yet, it could not build, so it could not load,
+  so `dagger generate` could not enumerate what to generate — generation would
+  have to have already run for generation to be possible. Seeding at init breaks
+  that cycle. Don't move it into `generate`.
+- **Top-level `let` is file-scoped in Dang, and list literals need a type
+  annotation.** `let xs = ["a"]` fails to resolve with a bare "not found"; write
+  `let xs: [String!]! = ["a"]`. Constants shared between `rust-sdk.dang` and
+  `mod.dang` are therefore duplicated and marked keep-in-step, the same way
+  `rustImage` is between `mod.dang` and `runtime/main.dang`.
 - **The engine owns module config.** `initModule` must not write `dagger.json`
   or `dagger-module.toml`; it returns only SDK-owned files. The engine merges in
   its own bookkeeping.

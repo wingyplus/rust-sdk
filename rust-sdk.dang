@@ -1,3 +1,11 @@
+# Directory the vendored SDK lives in, relative to a module root, and the files
+# a module needs from sdk/ to compile. Top-level lets are file-scoped in Dang, so
+# these are kept in step with the same constants in mod.dang — this file seeds
+# them at init, that one refreshes them on generate. If they drift, a seeded
+# module and a generated one disagree about what a module contains.
+let genDir = "dagger_sdk"
+let vendoredSdkFiles: [String!]! = ["LICENSE", "Cargo.toml", "src/**/*.rs"]
+
 """
 Manage Dagger modules that use the Rust SDK.
 """
@@ -137,8 +145,10 @@ type RustSdk {
   Pass `template` to pick a starter under templates/<template>; it defaults to
   `default` (a small working module).
 
-  The new module does not build until `dagger generate` runs: its `Cargo.toml`
-  depends on `./dagger_sdk`, which generation writes.
+  The starter is seeded with a working `dagger_sdk/`, so the new module builds
+  and loads immediately. `dagger generate` then replaces its bindings with ones
+  derived from the module's own schema — see `seedSdk` for why that ordering is
+  load-bearing rather than a convenience.
   """
   pub initModule(
     ws: Workspace!,
@@ -168,8 +178,28 @@ type RustSdk {
     } else {
       polyfill.workspace(ws).fork
         .withDirectory(modPath, renderedTemplate(name, starter))
+        .withDirectory(Path(modPath).join(Path(genDir)).string, seedSdk)
         .changes
     }
+  }
+
+  """
+  The vendored SDK a new module is seeded with.
+
+  Seeding this at init — rather than leaving it for `dagger generate` — is what
+  keeps a new module buildable from the moment it exists, and that matters more
+  than it looks. The engine discovers a workspace's generators by *loading* every
+  module in it, and loading a Rust module builds it. A module whose `Cargo.toml`
+  names a `dagger_sdk` that is not there yet cannot build, so it cannot load, so
+  `dagger generate` cannot even enumerate what to generate: generation would need
+  to have already run for generation to be possible.
+
+  The bindings under `src/gen` are the checked-in placeholder; `dagger generate`
+  replaces that directory with ones derived from the module's own schema. Until
+  it runs, the module compiles and serves — it just has no API surface to offer.
+  """
+  let seedSdk: Directory! {
+    currentModule.source.directory("sdk").filter(include: vendoredSdkFiles)
   }
 
   """
