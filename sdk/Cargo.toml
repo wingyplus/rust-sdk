@@ -1,0 +1,23 @@
+[package]
+name = "dagger-sdk"
+version = "0.1.0"
+edition = "2021"
+# goish's floor. The runtime image must satisfy this too.
+rust-version = "1.86"
+license = "Apache-2.0"
+description = "Dagger client library for Rust modules, built on goish."
+repository = "https://github.com/wingyplus/rust-sdk"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Pinned by git rev: goish is not published to crates.io. The same rev is
+# pinned in templates/*/Cargo.toml.tmpl so cargo unifies the two into one
+# checkout — they must be bumped together.
+goish = { git = "https://github.com/cogentica-ai/goish", rev = "ff061453ffd2533bb22ea68c8ccb176616aa4b5e" }
+
+# No [profile] sections here on purpose. This crate is always consumed as a path
+# dependency of a module, where cargo ignores a non-root package's profiles and
+# warns about them. The `panic = "abort"` goish needs is set by the module's own
+# Cargo.toml — see templates/*/Cargo.toml.tmpl.

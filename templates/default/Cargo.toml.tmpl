@@ -1,0 +1,32 @@
+[package]
+name = "{{ .ModuleCrate }}"
+version = "0.1.0"
+edition = "2021"
+# goish's floor, and the version the module runtime builds with.
+rust-version = "1.86"
+publish = false
+
+# The runtime starts the binary cargo emits here, and finds it by this name.
+# Renaming it without renaming the Dagger module will break `dagger call`.
+[[bin]]
+name = "{{ .ModuleCrate }}"
+path = "src/main.rs"
+
+[dependencies]
+# Written by `dagger generate`. Commit it — the module runtime builds from these
+# sources and never regenerates them.
+dagger-sdk = { path = "./dagger_sdk" }
+# Pinned by git rev: goish is not published to crates.io. This must stay on the
+# same rev as dagger_sdk/Cargo.toml, or cargo will build two copies of the
+# runtime and the linker will reject the duplicate symbols.
+goish = { git = "https://github.com/cogentica-ai/goish", rev = "ff061453ffd2533bb22ea68c8ccb176616aa4b5e" }
+
+# goish supplies its own runtime and never unwinds, so both profiles abort.
+[profile.release]
+panic = "abort"
+lto = true
+strip = true
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"

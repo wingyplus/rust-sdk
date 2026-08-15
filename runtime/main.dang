@@ -1,0 +1,131 @@
+let modSourceDirPath = "/src"
+let genDir = "dagger_sdk"
+let entrypointPath = "/usr/local/bin/dagger-module"
+let cargoTargetDir = "/build-target"
+
+# Cargo splits its download cache in two, and goish lands in the second one:
+# crates.io tarballs go under $CARGO_HOME/registry, git dependencies under
+# $CARGO_HOME/git. Caching only the registry would re-clone goish on every
+# module build. $CARGO_HOME is /usr/local/cargo in the official rust images.
+let cargoRegistryDir = "/usr/local/cargo/registry"
+let cargoGitDir = "/usr/local/cargo/git"
+
+# Build image. Kept in step with the same constant in ../mod.dang: bindings are
+# generated with this toolchain and compiled with it.
+let rustImage = "rust:1.90-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f"
+
+# The target the module binary is linked for. goish is Linux x86_64 only, and
+# the module's .cargo/config.toml names the same tuple so proc-macro crates are
+# built for the host without the bare-metal link flags.
+let cargoTarget = "x86_64-unknown-linux-gnu"
+
+"""
+Runtime module for the Rust SDK.
+
+Builds and packages a module from its already-vendored, committed sources. Code
+generation is owned by the Rust SDK's `generate` step (`dagger generate`), not
+here: modules commit their generated `dagger_sdk/` directory, so the engine skips
+codegen at module load and this runtime only fetches dependencies, compiles, and
+sets the entrypoint.
+"""
+type RustSdkRuntime {
+  """
+  No-op: code generation is owned by `dagger generate`. Modules commit the
+  generated files, so the engine skips codegen at module load. Returning the
+  module source unchanged keeps the SDK code-generator contract satisfied without
+  generating anything.
+  """
+  pub codegen(
+    modSource: ModuleSource!,
+    introspectionJson: File,
+  ): GeneratedCode! {
+    generatedCode(code: modSource.contextDirectory)
+  }
+
+  """
+  Compile the module from its committed sources and return a container that runs
+  it. The module is self-contained — the Rust SDK is vendored under `dagger_sdk/`
+  and `Cargo.toml` depends on it by path — so `cargo build` only fetches
+  third-party crates. No codegen, introspection, or scaffolding happens here.
+
+  The build products are copied out of the cache mounts into the image, so the
+  returned container runs a single statically linked binary with no cargo
+  registry or target directory attached.
+  """
+  pub moduleRuntime(
+    modSource: ModuleSource!,
+    introspectionJson: File,
+  ): Container! {
+    let modName = modSource.moduleName
+    let subPath = modSource.sourceSubpath
+    let contextDir = modSource.contextDirectory
+
+    checkGeneratedFiles(contextDir, subPath)
+
+    let workdir = Path(modSourceDirPath).join(Path(subPath)).string
+    let binPath = Path(cargoTargetDir)
+      .join(Path(cargoTarget))
+      .join(Path("release"))
+      .join(Path(toRustCrateName(modName)))
+      .string
+
+    baseContainer(container)
+      .withMountedDirectory(modSourceDirPath, contextDir)
+      .withWorkdir(workdir)
+      .withEnvVariable("CARGO_TARGET_DIR", cargoTargetDir)
+      # The goish git dependency is fetched over https; cargo's built-in git
+      # client is enough, but the CLI transport gives usable errors on failure.
+      .withEnvVariable("CARGO_NET_GIT_FETCH_WITH_CLI", "true")
+      .withExec(["cargo", "build", "--release"])
+      .withExec(["cp", binPath, entrypointPath])
+      .withoutMount(cargoTargetDir)
+      .withoutMount(cargoRegistryDir)
+      .withoutMount(cargoGitDir)
+      .withEntrypoint([entrypointPath])
+  }
+
+  """
+  Fail early, actionably, when the module is missing its vendored SDK — e.g.
+  `dagger generate` was never run, or its output was not committed. Without this,
+  `cargo build` fails on the unresolvable `dagger-sdk = { path = "./dagger_sdk" }`
+  dependency with an error that says nothing about `dagger generate`.
+  """
+  let checkGeneratedFiles(contextDir: Directory!, subPath: String!): Void {
+    let relPath = Path(subPath).join(Path(genDir)).join(Path("Cargo.toml")).string
+    let moduleLabel = if (subPath == "" or subPath == ".") { "." } else { subPath }
+    let present = contextDir.exists(path: relPath, expectedType: ExistsType.REGULAR_TYPE)
+    let nonEmpty = if (present) { contextDir.file(relPath).size > 0 } else { false }
+    if (nonEmpty == false) {
+      raise "the Rust module at \"" + moduleLabel + "\" is missing its generated directory \"" + genDir + "\" (missing or empty): run `dagger generate` and commit the generated files"
+    }
+    null
+  }
+
+  let baseContainer(ctr: Container!): Container! {
+    ctr
+      .from(rustImage)
+      .withoutEntrypoint
+      .withExec(["rustup", "target", "add", cargoTarget])
+      .withMountedCache(cargoRegistryDir, cacheVolume("rust-sdk-cargo-registry"))
+      .withMountedCache(cargoGitDir, cacheVolume("rust-sdk-cargo-git"))
+      .withMountedCache(cargoTargetDir, cacheVolume("rust-sdk-module-target"))
+  }
+}
+
+"""
+Convert a Dagger module name into a Rust crate name ("my-module" ->
+"my_module").
+
+Kept byte-for-byte in step with rustCrateName in
+helpers/render-template/main.go, which derives the same name at init time: that
+one names the `[package]` cargo builds, this one names the binary cargo emits.
+A divergence means the entrypoint points at a path that does not exist.
+"""
+let toRustCrateName(name: String!): String! {
+  name
+    .replaceMatches(`([A-Z]+)([A-Z][a-z])`, with: "$1_$2")
+    .replaceMatches(`([a-z0-9])([A-Z])`, with: "$1_$2")
+    .replaceMatches(`[^A-Za-z0-9]+`, with: "_")
+    .trim("_")
+    .toLower
+}

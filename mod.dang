@@ -1,0 +1,156 @@
+# Image codegen runs in. Kept in step with the same constant in
+# runtime/main.dang — the vendored SDK is compiled by the runtime with the
+# toolchain that generated it.
+let rustImage = "rust:1.90-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f"
+
+"""
+A Dagger module that uses the Rust SDK.
+"""
+type Mod {
+  """
+  Workspace-root-relative path of this module root. This stable identity is
+  independent of the client's cwd.
+  """
+  pub rootPath: String!
+
+  """
+  The workspace this module belongs to.
+  """
+  let ws: Workspace!
+
+  """
+  Marker filename that skips generate when found at or above this module root.
+  """
+  let skipGenerateFilename: String!
+
+  """
+  Directory the vendored SDK is written to, relative to the module root.
+  """
+  let genDir: String! = "dagger_sdk"
+
+  """
+  Module root relative to the client's cwd.
+  """
+  pub path: String! {
+    let cwd = ws.cwd.trimPrefix("/").trimSuffix("/")
+    if (rootPath == cwd) {
+      "."
+    } else if (cwd == "") {
+      rootPath
+    } else if (rootPath.trimPrefix(cwd + "/") != rootPath) {
+      rootPath.trimPrefix(cwd + "/")
+    } else if (rootPath == "." or cwd.trimPrefix(rootPath + "/") != cwd) {
+      let depth = if (rootPath == ".") { 0 } else { rootPath.split("/").length }
+      cwd.split("/").dropFirst(depth).map { segment => ".." }.join("/")
+    } else {
+      rootPath
+    }
+  }
+
+  """
+  Whether this module or an ancestor contains the configured generate skip marker.
+  """
+  pub skipGenerate: Boolean! {
+    ws.findUp(name: skipGenerateFilename, from: rootPath) != null
+  }
+
+  """
+  Generate this module: vendor the Rust SDK crate and the API bindings
+  generated from the module's schema into `<module>/dagger_sdk`.
+
+  If the generate skip marker is present, the changeset is empty.
+  """
+  pub generate: Changeset! {
+    if (skipGenerate) {
+      polyfill.workspace(ws).fork.changes
+    } else {
+      # Stage this module's local dependency closure first (leaf-first, possibly
+      # across SDKs) so its codegen sees up-to-date dependency bindings. The dep
+      # codegen is ephemeral: it appears in both the before and after of the
+      # changeset below, so it cancels out, leaving only this module's changes.
+      #
+      # rootPath is workspace-root-relative, so anchor it at "/" before passing it
+      # through the cwd-aware polyfill.
+      let stagedWs = ws.withChanges(
+        polyfill.workspace(ws).moduleSource("/" + rootPath).core.generateLocalDependencies(ws),
+      )
+      let modSource = polyfill.workspace(stagedWs).moduleSource("/" + rootPath)
+      let vendored = vendoredSdk(modSource.core.introspectionSchemaJSON)
+
+      let before = if (rootPath == ".") {
+        stagedWs.directory("/", include: ["**"])
+      } else {
+        stagedWs.directory("/", include: [rootPath + "/**"])
+      }
+
+      before
+        .withoutDirectory(joinPath(rootPath, genDir))
+        .withDirectory(joinPath(rootPath, genDir), vendored)
+        .changes(before)
+    }
+  }
+
+  """
+  The Rust SDK source shipped with this module.
+  """
+  let sdkSourceDir: Directory! { currentModule.source.directory("sdk") }
+
+  """
+  The SDK as it is vendored into a module: just enough to compile against.
+
+  Only the files a consuming module needs are kept — the crate manifest and its
+  library sources, plus the licence. Everything dev-only stays out: the codegen
+  binary (a module never regenerates its own SDK) and the test suite.
+
+  The checked-in bindings are then replaced by ones generated from this module's
+  own schema.
+  """
+  let vendoredSdk(introspectionJSON: File!): Directory! {
+    sdkSourceDir
+      .filter(include: ["LICENSE", "Cargo.toml", "src/**/*.rs"])
+      .withoutDirectory("src/gen")
+      .withDirectory("src/gen", generatedBindings(introspectionJSON))
+  }
+
+  """
+  Run the SDK's codegen binary over the module's introspection schema and return
+  the generated API bindings.
+  """
+  let generatedBindings(introspectionJSON: File!): Directory! {
+    codegenBuilder
+      .withMountedFile("/schema.json", introspectionJSON)
+      .withExec(["codegen", "--introspection", "/schema.json", "--outdir", "/gen"])
+      .directory("/gen")
+  }
+
+  """
+  Build the engine-free bindings generator.
+
+  It is an ordinary hosted Rust binary, built from `sdk/codegen` for the build
+  host — unlike the SDK crate itself, which is `no_std` and cross-linked by the
+  runtime.
+  """
+  let codegenBuilder: Container! {
+    container
+      .from(rustImage)
+      .withoutEntrypoint
+      .withDirectory("/codegen", sdkSourceDir.directory("codegen"))
+      .withWorkdir("/codegen")
+      # Build outside the source tree: a cache mount inside /codegen would sit
+      # under the directory written above it.
+      .withEnvVariable("CARGO_TARGET_DIR", "/codegen-target")
+      .withMountedCache("/usr/local/cargo/registry", cacheVolume("rust-sdk-cargo-registry"))
+      .withMountedCache("/codegen-target", cacheVolume("rust-sdk-codegen-target"))
+      .withExec(["cargo", "build", "--release"])
+      .withExec(["cp", "/codegen-target/release/codegen", "/usr/local/bin/codegen"])
+      .withoutMount("/codegen-target")
+      .withoutMount("/usr/local/cargo/registry")
+  }
+
+  """
+  Join a module path with a sub-path, handling the root (".") module.
+  """
+  let joinPath(modPath: String!, sub: String!): String! {
+    if (modPath == ".") { sub } else { modPath + "/" + sub }
+  }
+}

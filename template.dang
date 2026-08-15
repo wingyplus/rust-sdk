@@ -1,0 +1,14 @@
+"""
+An init template tracked by this module.
+"""
+type Template {
+  """
+  Template name passed to init.
+  """
+  pub name: String!
+
+  """
+  Template source files materialized into the new module before generation.
+  """
+  pub source: Directory!
+}

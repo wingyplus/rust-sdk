@@ -1,0 +1,5 @@
+name = "rust-sdk-runtime"
+engineVersion = "latest"
+
+[runtime]
+  source = "dang"

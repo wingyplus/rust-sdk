@@ -1,0 +1,46 @@
+# {{ .ModuleType }}
+
+This is a README for your module. Feel free to edit it.
+
+## Quickstart
+
+The module does not build until you generate its SDK:
+
+```console
+$ dagger generate
+```
+
+That writes `dagger_sdk/` — commit it. The module runtime builds from those
+sources and never regenerates them.
+
+## The project structure
+
+The module is a regular cargo project:
+
+```text
+.
+├── .cargo
+│   └── config.toml
+├── dagger_sdk
+├── src
+│   └── main.rs
+├── Cargo.toml
+└── README.md
+```
+
+`src/main.rs` is the module source. `dagger_sdk` is written by `dagger generate`:
+it holds the Dagger Rust SDK together with the API bindings generated from your
+engine's schema.
+
+`.cargo/config.toml` is not optional. The module is `no_std` and links without
+libc or a dynamic loader — [goish](https://github.com/cogentica-ai/goish)
+provides `_start` and the runtime itself — so the flags there are what make the
+binary link at all.
+
+## Status
+
+The Rust SDK is a scaffold. `dagger module init`, `dagger generate` and the
+module build all work, but the SDK cannot yet talk to the engine: the example
+functions in `src/main.rs` are not registered, and running the module exits with
+a message saying so. Treat this as a starting point for the SDK, not a working
+module.

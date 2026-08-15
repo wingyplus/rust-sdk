@@ -1,0 +1,16 @@
+[package]
+name = "codegen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Generates the Dagger Rust SDK's API bindings from an introspection schema."
+
+[[bin]]
+name = "codegen"
+path = "src/main.rs"
+
+# Deliberately dependency-free. This is an ordinary hosted binary built on the
+# build host, not with the module's bare-metal link flags, and keeping it free
+# of crates.io means `dagger generate` needs no registry access beyond the
+# toolchain image.
+[dependencies]

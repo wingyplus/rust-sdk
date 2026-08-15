@@ -1,0 +1,357 @@
+"""
+Manage Dagger modules that use the Rust SDK.
+"""
+type RustSdk {
+  """
+  Config filenames that mark a Dagger module root: the CLI 1.0
+  `dagger-module.toml` (workspace-managed modules) and the legacy `dagger.json`.
+  A managed module is discovered by whichever it uses.
+  """
+  let moduleConfigFilenames: [String!]! = ["dagger-module.toml", "dagger.json"]
+
+  """
+  Directory trees never searched for module roots: Cargo build output and
+  vendored crates hold copies of module config that are not modules.
+  """
+  let discoveryExcludes: [String!]! = ["**/target/**", "**/vendor/**"]
+
+  """
+  Marker filename that skips generate when found at or above a Rust SDK module root.
+  """
+  pub skipGenerateFilename: String! = ".dagger-rust-sdk-skip-generate"
+
+  """
+  Runtime source to write into modules created by this SDK.
+
+  Rust has no built-in engine runtime, so new modules point at this
+  repository's build-only runtime module.
+  """
+  pub targetRuntime: String! { "github.com/wingyplus/rust-sdk/runtime" }
+
+  """
+  Starter used by init when none is named.
+  """
+  let defaultTemplate: String! = "default"
+
+  """
+  Return init templates tracked by this module.
+
+  Templates live under templates/<name> and are materialized into the new
+  module before generation. Init picks one by name, or the module default when
+  none is named.
+  """
+  pub templates: [Template!]! {
+    if (currentModule.source.exists("templates")) {
+      let root = currentModule.source.directory("templates")
+      root.entries.map { name =>
+        Template(
+          name: name.trimSuffix("/"),
+          source: root.directory(name),
+        )
+      }
+    } else {
+      directory.entries.map { name =>
+        Template(
+          name: name,
+          source: directory,
+        )
+      }
+    }
+  }
+
+  """
+  Return every Rust SDK module this workspace manages that is visible from the
+  client's current location.
+
+  Discovery is anchored at the client's cwd, not the workspace root: the
+  nearest enclosing module plus every managed module at or below the cwd.
+  Running from a subdirectory acts on the project you're in — and the projects
+  beneath it — not the whole workspace.
+  """
+  pub modules(ws: Workspace!): [Mod!]! {
+    let managed = currentModule.asSDK(workspace: ws).modules.{{path}}
+    let cwd = normalizePath(ws.cwd)
+    polyfill
+      .workspace(ws)
+      .findConfigDirs(moduleConfigFilenames, exclude: discoveryExcludes)
+      .map { dir => workspacePath(cwd, dir) }
+      .uniq
+      .filter { path => managed.filter { m => normalizePath(m.path) == path }.length > 0 }
+      .map { path => Mod(rootPath: path, ws: ws, skipGenerateFilename: skipGenerateFilename) }
+  }
+
+  """
+  Return the Rust SDK module at or above a workspace path.
+
+  When `findUp` is true, `path` may point inside the module.
+  """
+  pub mod(ws: Workspace!, path: String! = ".", findUp: Boolean! = true): Mod! {
+    let modPath = if (findUp) {
+      let needle = normalizePath(path)
+
+      let asSdkBase = managedBase(ws, needle)
+      let foundToml = ws.findUp("dagger-module.toml", path)
+      let foundJson = ws.findUp("dagger.json", path)
+      let tomlBase = if (foundToml == null) { null } else {
+        configDir(foundToml, "dagger-module.toml")
+      }
+      let jsonBase = if (foundJson == null) { null } else {
+        configDir(foundJson, "dagger.json")
+      }
+
+      # Every candidate is an ancestor of `path`, so they lie on one chain and
+      # the deepest is the owning module. Resolving each source separately and
+      # falling back in order would let a shallow as-sdk entry or an ancestor's
+      # dagger-module.toml shadow a deeper module in a partially-migrated repo.
+      let asSdkDepth = baseDepth(asSdkBase)
+      let tomlDepth = baseDepth(tomlBase)
+      let jsonDepth = baseDepth(jsonBase)
+      let best = maxDepth(maxDepth(asSdkDepth, tomlDepth), jsonDepth)
+
+      if (asSdkBase != null and asSdkDepth == best) {
+        asSdkBase
+      } else if (tomlBase != null and tomlDepth == best) {
+        resolveTomlBase(ws, tomlBase, path)
+      } else if (jsonBase != null and jsonDepth == best) {
+        resolveJsonBase(ws, jsonBase, path)
+      } else {
+        raise "no Dagger module found containing path: " + path
+      }
+    } else {
+      normalizePath(path)
+    }
+
+    Mod(
+      rootPath: modPath,
+      ws: ws,
+      skipGenerateFilename: skipGenerateFilename,
+    )
+  }
+
+  """
+  Initialize Rust-owned files for a new Dagger module.
+
+  The engine resolves the destination `path` and owns the module's config; this
+  function only returns the SDK-owned starter source to layer onto `path`.
+
+  Pass `template` to pick a starter under templates/<template>; it defaults to
+  `default` (a small working module).
+
+  The new module does not build until `dagger generate` runs: its `Cargo.toml`
+  depends on `./dagger_sdk`, which generation writes.
+  """
+  pub initModule(
+    ws: Workspace!,
+    name: String!,
+    path: String!,
+    """
+    Starter to materialize from templates/<template>: `default` for a small working module, `empty` for a bare module.
+    """
+    template: String! = defaultTemplate,
+  ): Changeset! {
+    let rawPath = path.trimPrefix("./").trimPrefix("/")
+    let modPath = if (rawPath == "" or rawPath == ".") {
+      "."
+    } else if (rawPath == ".." or rawPath.trimPrefix("../") != rawPath) {
+      raise "path escapes workspace: " + rawPath
+    } else {
+      rawPath.trimSuffix("/")
+    }
+
+    # An empty name means "the default", not the templates/ directory itself —
+    # which exists, so it would pass the check below and render every starter as
+    # a subdirectory of the new module.
+    let starter = if (template == "") { defaultTemplate } else { template }
+
+    if (currentModule.source.exists("templates/" + starter) == false) {
+      raise "unknown init template: " + starter
+    } else {
+      polyfill.workspace(ws).fork
+        .withDirectory(modPath, renderedTemplate(name, starter))
+        .changes
+    }
+  }
+
+  """
+  Generate every managed Rust SDK module visible from the client's current
+  location: running from a subdirectory generates only the project you're in
+  and the projects beneath it.
+
+  Modules with the generate skip marker are skipped.
+  """
+  pub generateAll(ws: Workspace!): Changeset! @generate {
+    changeset.withChangesets(
+      modules(ws)
+        .filter { mod => mod.skipGenerate == false }
+        .map { mod => mod.generate },
+    )
+  }
+
+  """
+  Render the templates/<template> starter with the requested module name.
+  """
+  let renderedTemplate(name: String!, template: String!): Directory! {
+    container
+      .from("golang:1.25-alpine")
+      .withoutEntrypoint
+      .withMountedCache("/go/pkg/mod", cacheVolume("go-mod"))
+      .withMountedCache("/root/.cache/go-build", cacheVolume("go-build"))
+      .withDirectory("/helper", currentModule.source.directory("helpers/render-template"))
+      .withDirectory("/template", currentModule.source.directory("templates/" + template))
+      .withWorkdir("/helper")
+      .withExec(["go", "build", "-o", "/usr/local/bin/render-template", "."])
+      .withExec(["render-template", name, "/template", "/rendered"])
+      .directory("/rendered")
+  }
+
+  """
+  Return the deepest workspace-managed module containing `path`, or null when
+  this SDK manages none of its ancestors.
+
+  The workspace's [[modules.<sdk>.as-sdk.modules]] entries are the source of
+  truth for SDK-managed modules, so membership needs no config sniffing.
+  """
+  let managedBase(ws: Workspace!, path: String!): String {
+    # asSDK raises when this module is not installed as an SDK in the active
+    # workspace, which is the normal case for a legacy dagger.json-only repo.
+    # The `.{{path}}` selection is what executes the query, so it must sit
+    # inside the guard.
+    let managed = currentModule.asSDK(workspace: ws).modules.{{path}} rescue []
+
+    managed
+      .map { m => normalizePath(m.path) }
+      .filter { base => pathContains(base, path) }
+      .reduce(null) { best, base =>
+        if (best == null) {
+          base
+        } else if (pathDepth(base) > pathDepth(best)) {
+          base
+        } else {
+          best
+        }
+      }
+  }
+
+  let resolveTomlBase(ws: Workspace!, base: String!, path: String!): String! {
+    let runtimeSource = tomlRuntimeSource(ws, base)
+    if (isRustRuntime(runtimeSource)) {
+      base
+    } else if (runtimeSource == "") {
+      raise "Dagger module does not use the Rust SDK: " + path
+    } else {
+      raise "Dagger module does not use the Rust SDK: " + path + " (runtime source: " + runtimeSource + ")"
+    }
+  }
+
+  let resolveJsonBase(ws: Workspace!, base: String!, path: String!): String! {
+    let configPath = if (base == ".") { "dagger.json" } else { base + "/dagger.json" }
+    if (ws
+      .directory("/", include: [configPath])
+      .file(configPath)
+      .search(
+        pattern: "\"sdk\"\\s*:\\s*\\{[^}]*\"source\"\\s*:\\s*\"rust\"",
+        multiline: true,
+        dotall: true,
+        limit: 1,
+      ).{{id}}
+      .length == 0) {
+      raise "Dagger module does not use the Rust SDK: " + path
+    } else {
+      base
+    }
+  }
+
+  """
+  Whether a `[runtime] source` value names this SDK's runtime.
+
+  Accepts the bare `rust` name as well as this repository's runtime ref, with
+  or without a version suffix.
+  """
+  let isRustRuntime(source: String!): Boolean! {
+    source == "rust"
+      or source == targetRuntime
+      or source.hasPrefix(targetRuntime + "@")
+  }
+
+  """
+  Return the runtime source declared by a module's dagger-module.toml, or ""
+  when it declares none.
+
+  Only a quoted `source` on its own line of a literal [runtime] section is
+  recognized; inline tables and other TOML spellings read as no declaration,
+  which callers reject rather than mistake for Rust.
+  """
+  let tomlRuntimeSource(ws: Workspace!, base: String!): String! {
+    let configPath = if (base == ".") { "dagger-module.toml" } else { base + "/dagger-module.toml" }
+    let matches = ws
+      .directory("/", include: [configPath])
+      .file(configPath)
+      .search(
+        pattern: "^[ \\t]*\\[runtime\\][^\\[]*?^[ \\t]*source[ \\t]*=[ \\t]*(?:\"[^\"]*\"|'[^']*')",
+        multiline: true,
+        limit: 1,
+      ).{{matchedLines}}
+
+    matches
+      .map { m => runtimeSourceValue(m.matchedLines) }
+      .reduce("") { acc, source => if (acc == "") { source } else { acc } }
+  }
+
+  """
+  Extract the runtime source value out of a matched [runtime] block.
+
+  The match stops at the first uncommented assignment, so the value lives on
+  the block's last line, ahead of any trailing comment.
+  """
+  let runtimeSourceValue(block: String!): String! {
+    let sourceLine = block.trimSpace.split("\n").reduce("") { acc, line => line }
+    let assignment = sourceLine.split("#").reduce("") { acc, part => if (acc == "") { part } else { acc } }.trimSpace
+    let quote = if (assignment.trimSuffix("'") == assignment) { "\"" } else { "'" }
+
+    assignment.trimSuffix(quote).split(quote).reduce("") { acc, part => part }
+  }
+
+  """
+  Resolve a cwd-relative path — at or below the cwd ("." , "sub/dir") or a
+  strict ancestor (".." , "../..") — against the cwd into a
+  workspace-root-relative path.
+  """
+  let workspacePath(cwd: String!, path: String!): String! {
+    let base = if (cwd == ".") { [] } else { cwd.split("/") }
+    let segments = path.split("/").reduce(base) { acc, segment =>
+      if (segment == "..") {
+        acc.dropLast(1)
+      } else if (segment == "." or segment == "") {
+        acc
+      } else {
+        acc + [segment]
+      }
+    }
+    if (segments.length == 0) { "." } else { segments.join("/") }
+  }
+
+  let normalizePath(path: String!): String! {
+    let normalized = path.trimPrefix("./").trimPrefix("/").trimSuffix("/")
+    if (normalized == "") { "." } else { normalized }
+  }
+
+  let pathDepth(path: String!): Int! {
+    if (path == ".") { 0 } else { path.split("/").length }
+  }
+
+  let pathContains(base: String!, path: String!): Boolean! {
+    base == "." or path == base or path.hasPrefix(base + "/")
+  }
+
+  let baseDepth(base: String): Int! {
+    if (base == null) { -1 } else { pathDepth(base) }
+  }
+
+  let maxDepth(a: Int!, b: Int!): Int! {
+    if (b > a) { b } else { a }
+  }
+
+  let configDir(foundPath: String!, marker: String!): String! {
+    normalizePath(foundPath.trimPrefix("/").trimSuffix(marker))
+  }
+}
