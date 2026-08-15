@@ -248,8 +248,12 @@ type RustSdk {
     if (ws
       .directory("/", include: [configPath])
       .file(configPath)
+      # Accepts the bare name and this repository's ref, mirroring
+      # isRustRuntime. A legacy dagger.json cannot name a built-in `rust`
+      # runtime — there isn't one — so in practice it names the SDK by ref, and
+      # matching only "rust" would reject every real legacy module.
       .search(
-        pattern: "\"sdk\"\\s*:\\s*\\{[^}]*\"source\"\\s*:\\s*\"rust\"",
+        pattern: "\"sdk\"\\s*:\\s*\\{[^}]*\"source\"\\s*:\\s*\"(rust|github\\.com/wingyplus/rust-sdk[^\"]*)\"",
         multiline: true,
         dotall: true,
         limit: 1,

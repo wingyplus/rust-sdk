@@ -56,7 +56,11 @@ type RustSdkRuntime {
     modSource: ModuleSource!,
     introspectionJson: File,
   ): Container! {
-    let modName = modSource.moduleName
+    # moduleOriginalName, not moduleName: the latter reflects any alias the
+    # module was installed under as a dependency, while the cargo [package] name
+    # was written from the module's own name at init time. Core's built-in Go
+    # runtime uses ModuleOriginalName for the same reason.
+    let modName = modSource.moduleOriginalName
     let subPath = modSource.sourceSubpath
     let contextDir = modSource.contextDirectory
 
@@ -123,8 +127,12 @@ A divergence means the entrypoint points at a path that does not exist.
 """
 let toRustCrateName(name: String!): String! {
   name
-    .replaceMatches(`([A-Z]+)([A-Z][a-z])`, with: "$1_$2")
-    .replaceMatches(`([a-z0-9])([A-Z])`, with: "$1_$2")
+    # The braces are load-bearing. replaceMatches is Go's
+    # regexp.ReplaceAllString, which reads `$1_` as a reference to a group
+    # *named* "1_" — so "$1_$2" silently expands to nothing plus group 2 and
+    # "HTTPServer" becomes "server". See TestDangCrateNameMatchesGo.
+    .replaceMatches(`([A-Z]+)([A-Z][a-z])`, with: "${1}_${2}")
+    .replaceMatches(`([a-z0-9])([A-Z])`, with: "${1}_${2}")
     .replaceMatches(`[^A-Za-z0-9]+`, with: "_")
     .trim("_")
     .toLower

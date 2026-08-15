@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +41,88 @@ func TestNameConversionsMatchDang(t *testing.T) {
 			}
 			if got := rustTypeName(tc.name); got != tc.typeName {
 				t.Errorf("rustTypeName(%q) = %q, want %q", tc.name, got, tc.typeName)
+			}
+		})
+	}
+}
+
+// dangCrateNameRules extracts the transformation toRustCrateName applies, in
+// order, straight out of runtime/main.dang.
+//
+// The dang function is three replaceMatches calls followed by trim("_") and
+// toLower, and replaceMatches is Go's regexp.ReplaceAllString — so replaying
+// the extracted pairs here reproduces the dang result exactly rather than
+// approximating it.
+func dangCrateNameRules(t *testing.T) []struct {
+	re   *regexp.Regexp
+	repl string
+} {
+	t.Helper()
+
+	src, err := os.ReadFile(filepath.Join("..", "..", "runtime", "main.dang"))
+	if err != nil {
+		t.Fatalf("read runtime/main.dang: %v", err)
+	}
+
+	body := regexp.MustCompile(`(?s)let toRustCrateName\(.*?\n\}`).Find(src)
+	if body == nil {
+		t.Fatal("could not find toRustCrateName in runtime/main.dang")
+	}
+
+	var rules []struct {
+		re   *regexp.Regexp
+		repl string
+	}
+	for _, m := range regexp.MustCompile("\\.replaceMatches\\(`([^`]*)`, with: \"([^\"]*)\"\\)").FindAllSubmatch(body, -1) {
+		re, err := regexp.Compile(string(m[1]))
+		if err != nil {
+			t.Fatalf("dang pattern %q does not compile in Go: %v", m[1], err)
+		}
+		rules = append(rules, struct {
+			re   *regexp.Regexp
+			repl string
+		}{re, string(m[2])})
+	}
+
+	// Guard the shape the replay assumes: if the dang function grows a step,
+	// this test must learn about it rather than quietly checking a stale recipe.
+	if len(rules) != 3 {
+		t.Fatalf("expected 3 replaceMatches calls in toRustCrateName, found %d", len(rules))
+	}
+	if !bytes.Contains(body, []byte(`.trim("_")`)) || !bytes.Contains(body, []byte(".toLower")) {
+		t.Fatal(`toRustCrateName no longer ends in .trim("_").toLower`)
+	}
+
+	return rules
+}
+
+// TestDangCrateNameMatchesGo replays runtime/main.dang's toRustCrateName and
+// checks it against rustCrateName for every case the table above covers.
+//
+// TestNameConversionsMatchDang only pins the Go side, so it cannot see the dang
+// side drift. It didn't: toRustCrateName shipped with "$1_$2" replacements,
+// which Go's Expand reads as a reference to a group *named* "1_" — silently
+// turning "HTTPServer" into "server" and breaking every camel-cased module,
+// while the Go-only test stayed green.
+func TestDangCrateNameMatchesGo(t *testing.T) {
+	rules := dangCrateNameRules(t)
+
+	dang := func(name string) string {
+		for _, r := range rules {
+			name = r.re.ReplaceAllString(name, r.repl)
+		}
+		return strings.ToLower(strings.Trim(name, "_"))
+	}
+
+	for _, name := range []string{
+		"my-module", "my_module", "myModule", "MyModule", "mymodule",
+		"HTTPServer", "MyHTTPServer", "http-server", "foo2bar",
+		"Foo-Bar_baz", "--leading-and-trailing--",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, want := dang(name), rustCrateName(name); got != want {
+				t.Errorf("toRustCrateName(%q) = %q, but rustCrateName(%q) = %q — "+
+					"the runtime would look for a binary cargo never built", name, got, name, want)
 			}
 		})
 	}
