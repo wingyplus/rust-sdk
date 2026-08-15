@@ -13,5 +13,5 @@ impl {{ .ModuleType }} {}
 
 #[goish::main]
 fn main() {
-    dagger_sdk::serve()
+    dagger_sdk::serve("{{ .ModuleType }}")
 }

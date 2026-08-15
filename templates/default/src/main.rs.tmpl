@@ -34,7 +34,8 @@ impl {{ .ModuleType }} {
 
 #[goish::main]
 fn main() {
-    // Reads the pending function call from the engine session and dispatches
-    // it. See dagger_sdk::serve — dispatch is not implemented yet.
-    dagger_sdk::serve()
+    // Answers the engine's pending function call. Registration works, so the
+    // module loads and serves its API; the functions above are not wired to it
+    // yet. See dagger_sdk::serve.
+    dagger_sdk::serve("{{ .ModuleType }}")
 }
