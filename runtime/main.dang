@@ -64,8 +64,6 @@ type RustSdkRuntime {
     let subPath = modSource.sourceSubpath
     let contextDir = modSource.contextDirectory
 
-    checkGeneratedFiles(contextDir, subPath)
-
     let workdir = Path(modSourceDirPath).join(Path(subPath)).string
     let binPath = Path(cargoTargetDir)
       .join(Path(cargoTarget))
@@ -80,6 +78,7 @@ type RustSdkRuntime {
       # The goish git dependency is fetched over https; cargo's built-in git
       # client is enough, but the CLI transport gives usable errors on failure.
       .withEnvVariable("CARGO_NET_GIT_FETCH_WITH_CLI", "true")
+      .withExec(["sh", "-c", missingSdkGuard(subPath)])
       .withExec(["cargo", "build", "--release"])
       .withExec(["cp", binPath, entrypointPath])
       .withoutMount(cargoTargetDir)
@@ -89,20 +88,28 @@ type RustSdkRuntime {
   }
 
   """
-  Fail early, actionably, when the module is missing its vendored SDK — e.g.
-  `dagger generate` was never run, or its output was not committed. Without this,
-  `cargo build` fails on the unresolvable `dagger-sdk = { path = "./dagger_sdk" }`
-  dependency with an error that says nothing about `dagger generate`.
+  A shell guard that fails the build, actionably, when the module is missing its
+  vendored SDK — e.g. `dagger generate` was never run, or its output was not
+  committed. Without it, `cargo build` fails on the unresolvable
+  `dagger-sdk = { path = "./dagger_sdk" }` dependency with an error that says
+  nothing about `dagger generate`.
+
+  This runs *inside* the container rather than as a dang-side check on the
+  context directory, and that placement is the point. `moduleRuntime` is
+  evaluated whenever the engine merely enumerates a workspace's modules — to
+  discover generators, for instance — long before anything is built. Raising
+  there makes an ungenerated module impossible to even look at, which breaks
+  `dagger generate` on a freshly cloned repository: generation cannot run
+  because the modules it would generate cannot be loaded. Deferring the check to
+  an exec keeps the container lazy, so the failure surfaces only when the module
+  is actually built.
   """
-  let checkGeneratedFiles(contextDir: Directory!, subPath: String!): Void {
-    let relPath = Path(subPath).join(Path(genDir)).join(Path("Cargo.toml")).string
+  let missingSdkGuard(subPath: String!): String! {
     let moduleLabel = if (subPath == "" or subPath == ".") { "." } else { subPath }
-    let present = contextDir.exists(path: relPath, expectedType: ExistsType.REGULAR_TYPE)
-    let nonEmpty = if (present) { contextDir.file(relPath).size > 0 } else { false }
-    if (nonEmpty == false) {
-      raise "the Rust module at \"" + moduleLabel + "\" is missing its generated directory \"" + genDir + "\" (missing or empty): run `dagger generate` and commit the generated files"
-    }
-    null
+    # Single-quoted for the shell, so the message must not contain single
+    # quotes — `dagger generate` is spelled with backticks for that reason.
+    let message = "the Rust module at " + moduleLabel + " is missing its generated directory " + genDir + " (missing or empty): run `dagger generate` and commit the generated files"
+    "test -s " + genDir + "/Cargo.toml || { echo '" + message + "' >&2; exit 1; }"
   }
 
   let baseContainer(ctr: Container!): Container! {
