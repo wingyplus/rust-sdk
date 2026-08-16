@@ -17,9 +17,10 @@ Backed by [`github.com/dagger/polyfill`](https://github.com/dagger/polyfill).
 > [!NOTE]
 > **Working, with one gap.** The whole lifecycle runs: `dagger sdk install`,
 > `dagger module init rust`, `dagger generate`, and `dagger call` against a
-> module's functions, which execute as a single static binary. The gap is the
-> other direction — a module cannot yet call the engine API, because the
-> generated bindings are still a placeholder, so functions are limited to
+> module's functions, which execute as a single static binary. The bindings for
+> the other direction are generated too, and reach a live engine. The gap left
+> is the seam between them: nothing yet hands a module's own function the engine
+> connection those bindings need, so function signatures are still limited to
 > scalars. See [Status](#status).
 
 ## What's in here
@@ -181,10 +182,12 @@ fail to load:
 - every argument is one the engine can leave out: an `Option<T>`, one with a
   `default`, or a `Workspace`, which the engine injects itself.
 
-That query-writing is the part the generated bindings will replace. Until they
-land there is no `dag()`, so a generator reaches the engine through
-[`Session::query`](./sdk/src/lib.rs), and `Changeset` and `Workspace` are ID
-wrappers rather than real objects — enough to satisfy the contract, no more.
+That query-writing is the part the generated bindings replace. They exist now —
+`dagger::gen` is the whole engine API, typed — but a module's function is not
+yet handed the connection they need, so a generator still reaches the engine
+through [`Session::query`](./sdk/src/lib.rs), and `Changeset` and `Workspace`
+remain ID wrappers rather than real objects — enough to satisfy the contract, no
+more.
 
 ### Argument options
 
@@ -206,9 +209,9 @@ An argument is optional when its type is `Option<T>` **or** when it has a
 `default` — there is no `+optional` marker to write.
 
 `default_path` and `ignore` are parsed and forwarded, but the engine accepts
-them only on object types (`Directory`, `File`). Those need the generated
-bindings, so using either today is a compile error naming the parameter, rather
-than a failure at module load.
+them only on object types (`Directory`, `File`). Naming one in a signature is
+still a compile error — see the seam in [Status](#status) — so using either
+today fails at compile time, naming the parameter, rather than at module load.
 
 ### Supported types
 
@@ -217,8 +220,10 @@ function returning nothing maps to `VOID_KIND`.
 
 `Changeset` and `Workspace` are understood too, since the generator contract is
 written in terms of them; they cross the boundary as engine IDs. Every other
-object type, `Container` among them, is rejected at compile time until the
-bindings are generated.
+object type, `Container` among them, is rejected at compile time. The generated
+bindings define those types — that is no longer what is missing — but nothing
+yet hands a function the engine connection they carry; see
+[Status](#status).
 
 ### Checks
 
@@ -345,20 +350,33 @@ What works today:
   always x86_64 and is served from a `linux/amd64` container. The build itself
   runs on the engine's own platform and cross-links, so on an arm64 engine
   (Apple Silicon) compilation is native — only the finished binary is emulated.
+- `sdk/codegen`, which turns an engine's introspection schema into the whole
+  typed client — around 20,000 lines from the v0.21 schema. One type per GraphQL
+  object, holding the transport it was reached through and a lazily-built
+  selection that is only sent when a leaf value is asked for; enums, input
+  objects and per-field option structs alongside. It parses the schema with
+  goish's `encoding/json`; no serde equivalent is needed.
+
+  ```rust
+  let ctr = dag(transport).container().from("alpine").with_exec(&["echo", "hi"]);
+  let out = ctr.stdout()?;                                  // one round trip
+  let (platform, size) = ctr.fetch(|c| (                    // also one round trip
+      c.platform(),
+      c.file("/etc/os-release").select(|f| f.size()),
+  ))?;
+  ```
 
 What is stubbed:
 
-- **The client's typed API.** A module can be *called*, but it cannot yet *call*
-  the engine back with types: there is no `dag()`, because that needs the
-  generated bindings below, so a module that must reach the engine writes the
-  query itself against `Session::query`. Function signatures are limited to
-  `string`, `int`, `bool`, and the `Changeset`/`Workspace` ID wrappers a
-  generator is declared with.
-- **`sdk/codegen`.** It reads and validates the introspection schema and emits a
-  placeholder module. The real output should mirror the Go SDK's
-  `dagger.gen.go`: one type per GraphQL object, each method appending to a
-  lazily-built selection sent only when a leaf value is requested. Parsing the
-  schema is goish's `encoding/json`; no serde equivalent is needed.
+- **The seam between a module and its client.** Both halves work; nothing joins
+  them. A generated object carries an `Arc<dyn Transport>`, and the dispatch
+  `#[dagger::object]` emits has no transport to give one — `ObjectId`, how an
+  object crosses the call boundary, still wraps a bare ID. So a module that must
+  reach the engine writes the query itself against `Session::query`, and
+  function signatures are limited to `string`, `int`, `bool`, and the
+  `Changeset`/`Workspace` ID wrappers a generator is declared with. Closing this
+  means threading a transport through `Arguments` into `ObjectId::from_id`, and
+  giving `encode_object` a way to fail — reading an object's id is a round trip.
 
 Function declaration and dispatch **work**: `#[dagger::object]`,
 `#[dagger::function]` and `#[dagger::check]` read signatures at compile time and

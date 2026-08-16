@@ -182,6 +182,17 @@ caches hold source, not objects, and stay shared.
   fine by luck rather than by design, so it is checked: a consumer crate
   path-depending on a `tests/`-less copy builds clean. Don't add a `[[bin]]` or
   `[[example]]` to `sdk/Cargo.toml` on the same assumption without re-checking.
+- **Generated code may only name what lives outside `src/gen`.** The bindings
+  are written against `querybuilder.rs` and `engine.rs`, so anything they need
+  — `ToArg`, `arg_string`, `Args`, `arg_list` — belongs there and not in the
+  generated file. This is the same rule that keeps `Changeset`, `Workspace` and
+  the query builder at the crate root, applied from the other side.
+- **Two names in the emitted code cannot collide with the schema's.** The local
+  holding a field's argument list is `__args`, and the one in the list-of-object
+  loader is `__id`, because `snake_case` never produces a leading underscore and
+  so no schema name can reach them. `withExec` really does have an argument
+  named `args`, and the obvious spelling silently passed the half-built argument
+  list to `arg_list` instead of the caller's command.
 - **The engine owns module config.** `initModule` must not write `dagger.json`
   or `dagger-module.toml`; it returns only SDK-owned files. The engine merges in
   its own bookkeeping.
@@ -223,11 +234,23 @@ and goish cannot unwind. And a new test has to be added to the list in `main`,
 or it silently never runs.
 
 The SDK crate's own suite — the query builder in `sdk/src/querybuilder.rs` —
-runs the same way, under the same rules:
+and the bindings generator's suite run the same way, under the same rules:
 
 ```sh
 cd sdk && cargo test
+cd sdk/codegen && cargo test
 ```
+
+`sdk/codegen`'s suite renders `tests/fixture.json`, a miniature schema, and
+asserts on the *text* it emits. That is deliberate: the generator's contract is
+the source it writes, and its failures — a local shadowing a parameter, a doc
+comment with no item under it — surface as a compile error inside somebody's
+module rather than anywhere near the generator. What the fixture cannot prove is
+that the whole emitted surface compiles, because that needs the engine's real
+1.2 MB schema. **For any change to what codegen emits, generate against a live
+engine and build the crate with the result in place of `sdk/src/gen/mod.rs`**
+(the recipe is in `sdk/README.md`), then put the placeholder back. Both bugs
+found while writing the generator were ones only that step catches.
 
 Run the shared SDK contract suite:
 

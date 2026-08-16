@@ -60,20 +60,25 @@
 //! Per schema object `X`:
 //!
 //! ```ignore
-//! pub struct X { q: Chain }                       // the lazy chain
+//! pub struct X {                                  // the lazy chain, plus how to send it
+//!     transport: Arc<dyn Transport>,
+//!     q: Chain,
+//! }
 //! pub struct XFields;                             // zero-sized namespace
 //! impl Fields for XFields { fn new() -> Self { XFields } }
 //!
 //! impl XFields {
-//!     pub fn stdout(&self) -> Leaf<string> { Leaf::new("stdout") }
-//!     pub fn file(&self, path: &str) -> Field<FileFields> {
-//!         Field::with_args("file", string("(path:") + json_string(&string(path)) + ")")
+//!     pub fn stdout(&self) -> Leaf<string> { Leaf::<string>::new("stdout") }
+//!     pub fn file(&self, path: impl Into<string>) -> Field<FileFields> {
+//!         let mut __args = Args::new();
+//!         __args.put("path", arg_string(path));
+//!         Field::<FileFields>::with_args("file", __args.finish())
 //!     }
 //! }
 //!
 //! impl X {
 //!     pub fn fetch<S: Sel>(&self, f: impl FnOnce(&XFields) -> S) -> Result<S::Out, string> {
-//!         engine::fetch(&self.session, &self.q, &f(&XFields::new()))
+//!         engine::fetch(&*self.transport, &self.q, &f(&XFields::new()))
 //!     }
 //! }
 //! ```
@@ -83,6 +88,11 @@
 //! one generic each rather than three emitted types per object. Completion is
 //! unaffected: the closure parameter is still the concrete `&XFields`, which is
 //! what rust-analyzer resolves against.
+//!
+//! Going the other way — a Rust value into GraphQL argument text — is
+//! [`ToArg`], [`arg_string`] and [`arg_list`], accumulated by [`Args`]. Those
+//! live here rather than in the generated code for the same reason the rest of
+//! this module does: the generated half must be replaceable wholesale.
 
 use core::marker::PhantomData;
 
@@ -529,6 +539,147 @@ impl<T: FromJson> FromJson for slice<T> {
         }
         Ok(out)
     }
+}
+
+// ─── argument encoding ────────────────────────────────────────────────
+
+/// How a Rust value becomes the text of one GraphQL argument.
+///
+/// The counterpart to [`FromJson`], for the direction that leaves: a leaf
+/// decodes a response, a `ToArg` renders a request. Codegen emits one impl per
+/// generated enum, ID scalar and input object, and calls [`arg_list`] for the
+/// list-typed arguments; the shapes below are the ones the schema's built-in
+/// scalars land on.
+///
+/// The rendered text is spliced straight into a query, so an implementor is
+/// responsible for its own quoting — [`crate::json_string`] for anything
+/// string-shaped, nothing for a GraphQL enum literal, which is a bare name.
+pub trait ToArg {
+    /// This value as GraphQL argument text.
+    fn to_arg(&self) -> string;
+}
+
+impl ToArg for string {
+    fn to_arg(&self) -> string {
+        crate::json_string(self)
+    }
+}
+
+impl ToArg for str {
+    fn to_arg(&self) -> string {
+        crate::json_string(&string::from(self))
+    }
+}
+
+impl ToArg for int {
+    fn to_arg(&self) -> string {
+        strconv::Itoa(*self)
+    }
+}
+
+impl ToArg for float64 {
+    fn to_arg(&self) -> string {
+        // `-1` is Go's "shortest representation that round-trips", which is what
+        // keeps a whole number out of exponent form.
+        strconv::FormatFloat(*self, b'g', -1, 64)
+    }
+}
+
+impl ToArg for bool {
+    fn to_arg(&self) -> string {
+        if *self {
+            string("true")
+        } else {
+            string("false")
+        }
+    }
+}
+
+/// So a `&[&str]` list argument works without the caller owning its elements.
+impl<T: ToArg + ?Sized> ToArg for &T {
+    fn to_arg(&self) -> string {
+        (**self).to_arg()
+    }
+}
+
+/// A string-shaped argument, quoted and escaped.
+///
+/// Every string-backed scalar in the schema — `String`, `ID`, `Platform`,
+/// `JSON`, and the per-object `ContainerID` family — renders the same way, so
+/// codegen sends all of them through here. Taking `impl Into<string>` is what
+/// lets a generated method accept a `&str` as readily as a `string`; the
+/// [`ToArg`] impls cannot, since a bare `.into()` at the call site would have
+/// nothing to infer its target from.
+pub fn arg_string(value: impl Into<string>) -> string {
+    crate::json_string(&value.into())
+}
+
+/// An argument list under construction.
+///
+/// Codegen puts every argument of a field through one of these rather than
+/// concatenating by hand, because whether a separator is needed depends on how
+/// many optional arguments the caller actually supplied — which is not known
+/// until run time.
+pub struct Args {
+    out: string,
+    empty: bool,
+}
+
+impl Args {
+    /// An empty argument list.
+    pub fn new() -> Args {
+        Args {
+            out: string(""),
+            empty: true,
+        }
+    }
+
+    /// Add `name: value`, where `value` is already rendered — normally by
+    /// [`ToArg::to_arg`] or [`arg_list`].
+    pub fn put(&mut self, name: &'static str, value: string) {
+        if !self.empty {
+            self.out += ",";
+        }
+        self.out += name;
+        self.out += ":";
+        self.out += value;
+        self.empty = false;
+    }
+
+    /// `(a:1,b:2)` — what a field's argument list looks like, or the empty
+    /// string when no argument was supplied. A field with every argument
+    /// omitted must render as a bare name, not as `()`.
+    pub fn finish(self) -> string {
+        if self.empty {
+            return string("");
+        }
+        string("(") + self.out + ")"
+    }
+
+    /// `{a:1,b:2}` — the same list as an input-object literal.
+    pub fn object(self) -> string {
+        string("{") + self.out + "}"
+    }
+}
+
+impl Default for Args {
+    fn default() -> Args {
+        Args::new()
+    }
+}
+
+/// `[a,b,c]` — a list argument, each element rendered by its own [`ToArg`].
+pub fn arg_list<T: ToArg>(items: &[T]) -> string {
+    let mut out = string("[");
+    let mut first = true;
+    for item in items {
+        if !first {
+            out += ",";
+        }
+        out += item.to_arg();
+        first = false;
+    }
+    out + "]"
 }
 
 // ─── the chain a selection hangs off ──────────────────────────────────

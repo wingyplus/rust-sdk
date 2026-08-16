@@ -26,13 +26,27 @@
 //!
 //! The protocol above runs end to end: [`serve`] registers what the module
 //! serves — its functions and their arguments, which of them are checks, and
-//! which are generators — and dispatches an incoming call. What is missing is
-//! the other direction, a module calling the engine API back: the generated
-//! bindings are still a placeholder, so function types are limited to scalars
-//! and the objects in [`objects`], and [`Session::query`] is the only way to
-//! reach the engine. See the repository README.
+//! which are generators — and dispatches an incoming call.
+//!
+//! The other direction now exists too. [`gen`] is generated from the engine's
+//! own schema and is a full typed client: `dag(transport).container()
+//! .from("alpine").with_exec(&["echo", "hi"]).stdout()?` reaches a live engine.
+//!
+//! What is not yet wired is the seam between the two. A generated object holds
+//! an `Arc<dyn Transport>`, and nothing hands one to a module's function: the
+//! dispatch [`Object::invoke`](module::Object::invoke) emits carries only
+//! [`Arguments`], and [`ObjectId`] — how an object crosses the call boundary —
+//! still wraps a bare ID with no transport behind it. So function signatures
+//! remain limited to scalars and the two types in [`objects`], and a module
+//! that must reach the engine still does it through [`Session::query`]. See the
+//! repository README.
 
 #![no_std]
+
+// goish is built on `alloc` and so is everything here: `string` and `slice`
+// allocate, and the generated bindings hold their engine connection in an
+// `alloc::sync::Arc<dyn Transport>`.
+extern crate alloc;
 
 /// API bindings generated from the module's schema.
 ///
@@ -64,7 +78,8 @@ pub use module::{
 };
 pub use objects::{Changeset, ObjectId, Workspace};
 pub use querybuilder::{
-    Chain, Field, Fields, FromJson, Leaf, ListField, OptField, Sel, Sub, SubList, SubOpt,
+    arg_list, arg_string, Args, Chain, Field, Fields, FromJson, Leaf, ListField, OptField, Sel, Sub,
+    SubList, SubOpt, ToArg,
 };
 
 /// Declare a module's root object and the functions it serves.

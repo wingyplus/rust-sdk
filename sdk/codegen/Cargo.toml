@@ -7,9 +7,31 @@ rust-version = "1.86"
 publish = false
 description = "Generates the Dagger Rust SDK's API bindings from an introspection schema."
 
+# `test = false` on every non-test target is what makes `cargo test` work at
+# all. Cargo would otherwise compile the lib and the bin a second time each *as*
+# test targets, and those link libtest, which is `std`: `std` and goish both
+# define the `panic_impl` lang item, so they collide before a single test runs.
+# The tests live in one harness-less target instead — see tests/codegen.rs.
+# `doctest = false` is the same story for the doc examples.
+[lib]
+name = "codegen"
+path = "src/lib.rs"
+test = false
+doctest = false
+
 [[bin]]
 name = "codegen"
 path = "src/main.rs"
+test = false
+
+# goish ships Go's `testing` package, so the suite is a `main` that hands its
+# tests to `testing::Main` — the same shape `go test` generates — rather than
+# `#[test]` functions libtest collects. `harness = false` tells cargo to run the
+# binary and read its exit status instead of injecting a harness of its own.
+[[test]]
+name = "codegen"
+path = "tests/codegen.rs"
+harness = false
 
 [dependencies]
 # The only dependency, and the same one the SDK crate and every module use.
