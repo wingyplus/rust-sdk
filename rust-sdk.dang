@@ -22,6 +22,26 @@ let cargoGitDir = "/usr/local/cargo/git"
 # out of the container every init would otherwise copy it into.
 let helperFiles: [String!]! = ["Cargo.toml", "Cargo.lock", ".cargo/**", "src/**"]
 
+# Where the built helper lands in the container that runs it.
+let helperPath = "/usr/local/bin/render-template"
+
+# Multi-arch build constants, kept in step with mod.dang and runtime/main.dang —
+# top-level `let` is file-scoped in Dang, so all three files carry a copy. The
+# helper is a goish binary, so it is x86_64 like everything else here: it builds
+# on the engine's own platform and cross-links, then *runs* on servePlatform.
+let servePlatform: Platform! = "linux/amd64"
+let crossLinkerEnv = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"
+let crossLinker = "x86_64-linux-gnu-gcc"
+let crossToolchainSetup = "test \"$(uname -m)\" = x86_64 || { apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc-x86-64-linux-gnu; }"
+let runImage = "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+let buildHostKey: String! {
+  if (defaultPlatform == "linux/amd64") {
+    "linux-amd64"
+  } else {
+    if (defaultPlatform == "linux/arm64") { "linux-arm64" } else { "other" }
+  }
+}
+
 """
 Manage Dagger modules that use the Rust SDK.
 """
@@ -243,11 +263,18 @@ type RustSdk {
   own crate skips LTO because nothing here ships — see its Cargo.toml.
   """
   let renderedTemplate(name: String!, template: String!): Directory! {
-    container
+    # Build on the engine's own platform and cross-link to cargoTarget, so rustc
+    # runs natively rather than under emulation. Without `rustup target add` this
+    # fails on a non-x86_64 engine with "E0463: can't find crate for `core`", and
+    # without the cross driver it gets as far as the link step and dies on
+    # "unrecognized command-line option '-m64'".
+    let helperBinary = container()
       .from(rustImage)
       .withoutEntrypoint
+      .withExec(["rustup", "target", "add", cargoTarget])
+      .withExec(["sh", "-c", crossToolchainSetup])
+      .withEnvVariable(crossLinkerEnv, crossLinker)
       .withDirectory("/helper", currentModule.source.directory("helpers/render-template").filter(include: helperFiles))
-      .withDirectory("/template", currentModule.source.directory("templates/" + template))
       .withWorkdir("/helper")
       # Build outside the source tree: a cache mount inside /helper would sit
       # under the directory written above it.
@@ -255,10 +282,22 @@ type RustSdk {
       .withEnvVariable("CARGO_NET_GIT_FETCH_WITH_CLI", "true")
       .withMountedCache(cargoRegistryDir, cacheVolume("rust-sdk-cargo-registry"))
       .withMountedCache(cargoGitDir, cacheVolume("rust-sdk-cargo-git"))
-      .withMountedCache(cargoTargetDir, cacheVolume("rust-sdk-render-template-target"))
+      # Object caches are keyed by build host: cargo puts host build scripts and
+      # proc-macro .so files under $CARGO_TARGET_DIR/release/, and an engine of
+      # the other architecture cannot exec them.
+      .withMountedCache(cargoTargetDir, cacheVolume("rust-sdk-render-template-target-" + buildHostKey))
       .withExec(["cargo", "build", "--release", "--locked", "--bin", "render-template"])
-      .withExec(["cp", cargoTargetDir + "/" + cargoTarget + "/release/render-template", "/usr/local/bin/render-template"])
-      .withExec(["render-template", name, "/template", "/rendered"])
+      .withExec(["cp", cargoTargetDir + "/" + cargoTarget + "/release/render-template", helperPath])
+      .file(helperPath)
+
+    # Run it on servePlatform: the helper is x86_64 whatever built it, so it
+    # cannot be exec'd in a native container on an arm64 engine. runImage is a
+    # small base — see that constant for why it is not `scratch`.
+    container(platform: servePlatform)
+      .from(runImage)
+      .withFile(helperPath, helperBinary, permissions: 493)
+      .withDirectory("/template", currentModule.source.directory("templates/" + template))
+      .withExec([helperPath, name, "/template", "/rendered"])
       .directory("/rendered")
   }
 
