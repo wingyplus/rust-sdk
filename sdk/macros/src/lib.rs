@@ -46,10 +46,10 @@ use proc_macro::{Delimiter, TokenStream, TokenTree};
 /// treatment.
 ///
 /// ```ignore
-/// #[dagger_sdk::object]
+/// #[dagger::object]
 /// impl Build {
 ///     /// Compile the project.                    // becomes the description
-///     #[dagger_sdk::function]
+///     #[dagger::function]
 ///     pub fn compile(&self, target: string) -> string {
 ///         self.toolchain(target)                  // calls a private helper
 ///     }
@@ -74,7 +74,7 @@ use proc_macro::{Delimiter, TokenStream, TokenTree};
 ///
 /// ```ignore
 /// /// Regenerate the checked-in fixtures.
-/// #[dagger_sdk::function(generate)]
+/// #[dagger::function(generate)]
 /// pub fn generate(&self, ws: Workspace) -> Changeset {
 ///     …
 /// }
@@ -103,13 +103,13 @@ pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// decorator.
 ///
 /// ```ignore
-/// #[dagger_sdk::object]
+/// #[dagger::object]
 /// impl Build {
 ///     /// Lint the project.
-///     #[dagger_sdk::check]
+///     #[dagger::check]
 ///     pub fn lint(&self) {
 ///         if !self.sources_are_formatted() {
-///             ::dagger_sdk::fail(::goish::convert::string("lint failed"))
+///             ::dagger::fail(::goish::convert::string("lint failed"))
 ///         }
 ///     }
 /// }
@@ -122,7 +122,7 @@ pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// A check is also an ordinary function — it is still callable as
 /// `dagger call lint` — so this attribute implies [`macro@function`] and the two
 /// need not both be written. It fails the same way any other function does: by
-/// exiting non-zero, which [`dagger_sdk::fail`] does with a message on stderr.
+/// exiting non-zero, which [`dagger::fail`] does with a message on stderr.
 ///
 /// # No required arguments
 ///
@@ -132,7 +132,7 @@ pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// the check tree — it simply never appears in `dagger check`. Since that is
 /// silent, the macro rejects it at compile time instead, naming the argument.
 ///
-/// [`dagger_sdk::fail`]: ../dagger_sdk/fn.fail.html
+/// [`dagger::fail`]: ../dagger/fn.fail.html
 #[proc_macro_attribute]
 pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
@@ -153,10 +153,10 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// pub struct Build;
 ///
-/// #[dagger_sdk::object]
+/// #[dagger::object]
 /// impl Build {
 ///     /// Build an image and return its tag.
-///     #[dagger_sdk::function]
+///     #[dagger::function]
 ///     pub fn image(
 ///         &self,
 ///         // Options go on the parameter; `doc` carries its description,
@@ -179,16 +179,14 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// #[goish::main]
 /// fn main() {
-///     dagger_sdk::serve::<Build>()
+///     dagger::serve::<Build>()
 /// }
 /// ```
 ///
 /// # Argument options
 ///
-/// These live in `#[dagger(...)]` on the parameter itself. `#[dagger_sdk(...)]`
-/// is accepted too, if you prefer it to name the crate the marker came from.
-/// The attribute is removed before `rustc` sees the function, so it needs
-/// nothing in scope.
+/// These live in `#[dagger(...)]` on the parameter itself. The attribute is
+/// removed before `rustc` sees the function, so it needs nothing in scope.
 ///
 /// | Option | Effect | Go SDK equivalent |
 /// | --- | --- | --- |
@@ -224,7 +222,7 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Two object types are also understood — `Changeset` and `Workspace` — because
 /// the generator contract is written in terms of them. They cross the boundary
-/// as engine IDs; see `dagger_sdk::ObjectId`.
+/// as engine IDs; see `dagger::ObjectId`.
 ///
 /// Every other object type, `Container` and `Directory` among them, is **not**
 /// supported yet: they need the generated bindings, which are still a
@@ -290,15 +288,7 @@ fn is_dagger_attr(stream: TokenStream) -> bool {
             _ => break,
         }
     }
-    matches!(
-        path.as_str(),
-        "dagger"
-            | "dagger_sdk"
-            | "dagger::function"
-            | "dagger_sdk::function"
-            | "dagger::check"
-            | "dagger_sdk::check"
-    )
+    matches!(path.as_str(), "dagger" | "dagger::function" | "dagger::check")
 }
 
 /// Options read from the marker attribute itself, `#[dagger::function(...)]`.
@@ -343,12 +333,7 @@ struct Options {
 /// Read the `#[dagger(...)]` options attached to a parameter.
 fn options_of(attrs: &[Attr]) -> Result<Options, String> {
     let mut options = Options::default();
-    // Both spellings are accepted: `#[dagger(...)]` reads best, and
-    // `#[dagger_sdk(...)]` matches the crate the marker is imported from.
-    for attr in attrs
-        .iter()
-        .filter(|a| a.path == "dagger" || a.path == "dagger_sdk")
-    {
+    for attr in attrs.iter().filter(|a| a.path == "dagger") {
         for part in split_commas(&attr.args) {
             let key = match part.first() {
                 Some(TokenTree::Ident(id)) => id.to_string(),
@@ -458,7 +443,7 @@ fn unwrap_option(ty: &str) -> Option<&str> {
         .map(|inner| inner.trim())
 }
 
-/// The last segment of a path, so `dagger_sdk::Changeset` reads as `Changeset`.
+/// The last segment of a path, so `dagger::Changeset` reads as `Changeset`.
 fn last_segment(ty: &str) -> &str {
     ty.rsplit("::").next().unwrap_or(ty).trim()
 }
@@ -482,7 +467,7 @@ fn kind_of(ty: &str) -> Result<Kind, String> {
         "bool" => ("BOOLEAN_KIND", "bool"),
         "" | "()" => ("VOID_KIND", "void"),
         other => {
-            // Written as `Changeset` or as `dagger_sdk::Changeset`; both name
+            // Written as `Changeset` or as `dagger::Changeset`; both name
             // the same object as far as the engine is concerned.
             let object = match last_segment(other) {
                 "Changeset" => "Changeset",
@@ -532,17 +517,17 @@ fn expand(item: TokenStream) -> Result<TokenStream, String> {
 
     let generated = format!(
         r#"
-impl ::dagger_sdk::Object for {type_name} {{
+impl ::dagger::Object for {type_name} {{
     const NAME: &'static str = {name_literal};
 
-    fn functions() -> &'static [::dagger_sdk::FunctionDef] {{
-        const FUNCTIONS: &[::dagger_sdk::FunctionDef] = &[{defs}];
+    fn functions() -> &'static [::dagger::FunctionDef] {{
+        const FUNCTIONS: &[::dagger::FunctionDef] = &[{defs}];
         FUNCTIONS
     }}
 
     fn invoke(
         name: &::goish::gostring::string,
-        args: &::dagger_sdk::Arguments,
+        args: &::dagger::Arguments,
     ) -> ::core::result::Result<::goish::gostring::string, ::goish::gostring::string> {{
         {arms}
         ::core::result::Result::Err(
@@ -615,7 +600,7 @@ fn function_def(f: &Function) -> Result<String, String> {
             .join(", ");
 
         args.push_str(&format!(
-            "::dagger_sdk::ArgDef {{ name: {name}, kind: {kind}, object: {object}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated} }},",
+            "::dagger::ArgDef {{ name: {name}, kind: {kind}, object: {object}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated} }},",
             name = quote_str(&camel_case(&param.name)),
             kind = quote_str(kind.kind),
             object = quote_str(kind.object),
@@ -641,7 +626,7 @@ fn function_def(f: &Function) -> Result<String, String> {
     }
 
     Ok(format!(
-        "::dagger_sdk::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_object: {ret_object}, is_check: {is_check}, generator: {generator}, args: &[{args}] }},",
+        "::dagger::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_object: {ret_object}, is_check: {is_check}, generator: {generator}, args: &[{args}] }},",
         name = quote_str(&camel_case(&f.name)),
         doc = quote_str(&f.doc),
         ret = quote_str(ret.kind),
@@ -676,7 +661,7 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
             read
         } else {
             let ty = unwrap_option(&param.ty).unwrap_or(param.ty.trim());
-            let from_id = format!("<{ty} as ::dagger_sdk::ObjectId>::from_id");
+            let from_id = format!("<{ty} as ::dagger::ObjectId>::from_id");
             if kind.optional {
                 format!("{read}.map({from_id})")
             } else {
@@ -697,11 +682,11 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
     let call = format!("{receiver}{fname}({args})", fname = f.name, args = call_args.join(", "));
     let ret = kind_of(&f.return_ty)?;
     let encode = match ret.kind {
-        "VOID_KIND" => format!("{{ {call}; ::dagger_sdk::encode_void() }}"),
-        "STRING_KIND" => format!("::dagger_sdk::encode_string(&{call})"),
-        "INTEGER_KIND" => format!("::dagger_sdk::encode_int({call})"),
-        "BOOLEAN_KIND" => format!("::dagger_sdk::encode_bool({call})"),
-        "OBJECT_KIND" => format!("::dagger_sdk::encode_object(&{call})"),
+        "VOID_KIND" => format!("{{ {call}; ::dagger::encode_void() }}"),
+        "STRING_KIND" => format!("::dagger::encode_string(&{call})"),
+        "INTEGER_KIND" => format!("::dagger::encode_int({call})"),
+        "BOOLEAN_KIND" => format!("::dagger::encode_bool({call})"),
+        "OBJECT_KIND" => format!("::dagger::encode_object(&{call})"),
         other => return Err(format!("cannot encode a return of kind {other}")),
     };
 

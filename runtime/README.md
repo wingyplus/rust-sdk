@@ -14,7 +14,7 @@ pointing at this module:
 Rust has no built-in engine runtime, so the engine loads this module to learn
 how to build and start a Rust module. That is the whole job:
 
-- `codegen` is a **no-op**. Modules commit their generated `dagger_sdk/`
+- `codegen` is a **no-op**. Modules commit their generated `dagger/`
   directory, so there is nothing to generate at module load. Generation is
   owned by `dagger generate` in the [parent SDK module](../mod.dang).
 - `moduleRuntime` runs `cargo build --release` over the committed sources in a
@@ -51,6 +51,6 @@ base.
   (The arm64 `rust` image does carry an x86_64 `core`, so `rustup target add`
   is enough for rustc; what it lacks is a linker that understands `-m64`, which
   `crossToolchainSetup` installs.)
-- **A module missing `dagger_sdk/` fails fast** with a message naming
+- **A module missing `dagger/` fails fast** with a message naming
   `dagger generate`, rather than letting cargo report an unresolvable path
   dependency.

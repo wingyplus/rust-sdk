@@ -3,7 +3,7 @@
 # these are kept in step with the same constants in mod.dang — this file seeds
 # them at init, that one refreshes them on generate. If they drift, a seeded
 # module and a generated one disagree about what a module contains.
-let genDir = "dagger_sdk"
+let genDir = "dagger"
 let vendoredSdkFiles: [String!]! = ["LICENSE", "Cargo.toml", "src/**/*.rs", "macros/Cargo.toml", "macros/src/**/*.rs"]
 
 # Toolchain the init helper is built with, and where cargo puts things. Kept in
@@ -181,7 +181,7 @@ type RustSdk {
   Pass `template` to pick a starter under templates/<template>; it defaults to
   `default` (a small working module).
 
-  The starter is seeded with a working `dagger_sdk/`, so the new module builds
+  The starter is seeded with a working `dagger/`, so the new module builds
   and loads immediately. `dagger generate` then replaces its bindings with ones
   derived from the module's own schema — see `seedSdk` for why that ordering is
   load-bearing rather than a convenience.
@@ -226,7 +226,7 @@ type RustSdk {
   keeps a new module buildable from the moment it exists, and that matters more
   than it looks. The engine discovers a workspace's generators by *loading* every
   module in it, and loading a Rust module builds it. A module whose `Cargo.toml`
-  names a `dagger_sdk` that is not there yet cannot build, so it cannot load, so
+  names a `dagger/` that is not there yet cannot build, so it cannot load, so
   `dagger generate` cannot even enumerate what to generate: generation would need
   to have already run for generation to be possible.
 

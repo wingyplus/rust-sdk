@@ -8,7 +8,7 @@
 //!
 //! Reads the engine's GraphQL introspection schema and writes a Rust module
 //! tree to `--outdir`, which `dagger generate` vendors into each module at
-//! `dagger_sdk/src/gen/`.
+//! `dagger/src/gen/`.
 //!
 //! Like everything else in this repository, this is `no_std` and built on
 //! goish. It reaches for `os` where a hosted binary would reach for `std::fs`,

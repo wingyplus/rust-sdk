@@ -113,7 +113,7 @@ caches hold source, not objects, and stay shared.
   it is pinned by rev in `sdk/Cargo.toml`, `sdk/codegen/Cargo.toml`,
   `helpers/render-template/Cargo.toml` and every `templates/*/Cargo.toml.tmpl`.
   Cargo treats two revs as two different crates: if a module and its vendored
-  `dagger_sdk` disagree, the link fails on duplicate runtime symbols. Bump them
+  `dagger` disagree, the link fails on duplicate runtime symbols. Bump them
   together.
 - **Two name derivations must stay byte-for-byte identical.** `rust_crate_name`
   in `helpers/render-template/src/lib.rs` writes the cargo `[package]` name at
@@ -147,10 +147,16 @@ caches hold source, not objects, and stay shared.
   filename — a module named `crate` renders, builds and runs. (`cargo new`
   refuses such names only because it also creates a lib target, which these
   templates do not.) Both halves are pinned by tests; don't "fix" the crate side.
-- **`initModule` seeds `dagger_sdk/`, and that is not a convenience.** The engine
+
+  The one name that does not work is `Dagger` itself: it derives the crate name
+  `dagger`, which is also the vendored SDK's package name, and cargo refuses the
+  pair with `package collision in the lockfile`. This is known and accepted, not
+  an oversight — it is the cost of the vendored crate being called `dagger`
+  rather than `dagger-sdk`. Reserving it would need the asymmetry above undone.
+- **`initModule` seeds `dagger/`, and that is not a convenience.** The engine
   discovers a workspace's generators by *loading* every module in it, and loading
   a Rust module builds it. If a scaffolded module's `Cargo.toml` named a
-  `dagger_sdk` that did not exist yet, it could not build, so it could not load,
+  `dagger` that did not exist yet, it could not build, so it could not load,
   so `dagger generate` could not enumerate what to generate — generation would
   have to have already run for generation to be possible. Seeding at init breaks
   that cycle. Don't move it into `generate`.
@@ -175,10 +181,10 @@ caches hold source, not objects, and stay shared.
 | Path | What it is |
 | --- | --- |
 | `rust-sdk.dang` | SDK contract: `initModule`, `targetRuntime`, `modules`, `mod`, `@generate` |
-| `mod.dang` | A managed module: vendors the SDK + generated bindings into `dagger_sdk/` |
+| `mod.dang` | A managed module: vendors the SDK + generated bindings into `dagger/` |
 | `template.dang` | Init template value type |
 | `runtime/` | Build-only module runtime new Rust modules point at |
-| `sdk/` | The `dagger-sdk` crate and `sdk/codegen`, its bindings generator |
+| `sdk/` | The `dagger` crate and `sdk/codegen`, its bindings generator |
 | `templates/` | Starters for `dagger module init rust` |
 | `helpers/render-template/` | Helper that renders a template for a module name |
 

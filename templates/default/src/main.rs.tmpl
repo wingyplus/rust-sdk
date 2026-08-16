@@ -16,10 +16,10 @@ use goish::{fmt, string};
 /// A generated module for {{ .ModuleType }} functions.
 pub struct {{ .ModuleType }};
 
-#[dagger_sdk::object]
+#[dagger::object]
 impl {{ .ModuleType }} {
     /// Returns the string argument, echoed back.
-    #[dagger_sdk::function]
+    #[dagger::function]
     pub fn container_echo(&self, string_arg: string) -> string {
         fmt::Sprintf!("echo %s", string_arg)
     }
@@ -29,7 +29,7 @@ impl {{ .ModuleType }} {
     // default. Keep the `///` below short: it becomes the description shown by
     // `dagger functions`.
     /// Returns the pattern and directory it would grep.
-    #[dagger_sdk::function]
+    #[dagger::function]
     pub fn grep_dir(
         &self,
         #[dagger(doc = "Directory to search")] directory_arg: string,
@@ -43,5 +43,5 @@ impl {{ .ModuleType }} {
 fn main() {
     // Answers the engine's pending function call: registers the object and its
     // functions, or dispatches to one of them.
-    dagger_sdk::serve::<{{ .ModuleType }}>()
+    dagger::serve::<{{ .ModuleType }}>()
 }

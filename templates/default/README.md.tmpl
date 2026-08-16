@@ -4,14 +4,14 @@ This is a README for your module. Feel free to edit it.
 
 ## Quickstart
 
-The module builds as soon as it is created — `dagger_sdk/` is seeded for you.
+The module builds as soon as it is created — `dagger/` is seeded for you.
 To give it bindings generated from your own engine's schema:
 
 ```console
 $ dagger generate
 ```
 
-That rewrites `dagger_sdk/` — commit it. The module runtime builds from those
+That rewrites `dagger/` — commit it. The module runtime builds from those
 sources and never regenerates them.
 
 ## The project structure
@@ -22,14 +22,14 @@ The module is a regular cargo project:
 .
 ├── .cargo
 │   └── config.toml
-├── dagger_sdk
+├── dagger
 ├── src
 │   └── main.rs
 ├── Cargo.toml
 └── README.md
 ```
 
-`src/main.rs` is the module source. `dagger_sdk` is written by `dagger generate`:
+`src/main.rs` is the module source. `dagger` is written by `dagger generate`:
 it holds the Dagger Rust SDK together with the API bindings generated from your
 engine's schema.
 

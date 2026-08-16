@@ -1,5 +1,5 @@
 let modSourceDirPath = "/src"
-let genDir = "dagger_sdk"
+let genDir = "dagger"
 let entrypointPath = "/usr/local/bin/dagger-module"
 let cargoTargetDir = "/build-target"
 
@@ -77,7 +77,7 @@ Runtime module for the Rust SDK.
 
 Builds and packages a module from its already-vendored, committed sources. Code
 generation is owned by the Rust SDK's `generate` step (`dagger generate`), not
-here: modules commit their generated `dagger_sdk/` directory, so the engine skips
+here: modules commit their generated `dagger/` directory, so the engine skips
 codegen at module load and this runtime only fetches dependencies, compiles, and
 sets the entrypoint.
 """
@@ -97,7 +97,7 @@ type RustSdkRuntime {
 
   """
   Compile the module from its committed sources and return a container that runs
-  it. The module is self-contained — the Rust SDK is vendored under `dagger_sdk/`
+  it. The module is self-contained — the Rust SDK is vendored under `dagger/`
   and `Cargo.toml` depends on it by path — so `cargo build` only fetches
   third-party crates. No codegen, introspection, or scaffolding happens here.
 
@@ -153,7 +153,7 @@ type RustSdkRuntime {
   A shell guard that fails the build, actionably, when the module is missing its
   vendored SDK — e.g. `dagger generate` was never run, or its output was not
   committed. Without it, `cargo build` fails on the unresolvable
-  `dagger-sdk = { path = "./dagger_sdk" }` dependency with an error that says
+  `dagger = { path = "./dagger" }` dependency with an error that says
   nothing about `dagger generate`.
 
   This runs *inside* the container rather than as a dang-side check on the

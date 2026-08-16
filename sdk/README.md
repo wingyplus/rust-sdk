@@ -1,11 +1,11 @@
-# dagger-sdk
+# dagger
 
 The Dagger client library for Rust modules, plus the generator that produces its
 API bindings.
 
 ```text
 .
-├── Cargo.toml     the `dagger-sdk` crate — no_std, depends on goish
+├── Cargo.toml     the `dagger` crate — no_std, depends on goish
 ├── src/lib.rs     session parameters and the module entrypoint
 ├── src/module.rs  what a module declares, and how a call reaches it
 ├── src/objects.rs the engine objects a module can name; NOT under src/gen
@@ -15,7 +15,7 @@ API bindings.
 ```
 
 This crate is never consumed from crates.io or by git ref. `dagger generate`
-vendors it into each module as `dagger_sdk/`, with `src/gen/` replaced by
+vendors it into each module as `dagger/`, with `src/gen/` replaced by
 bindings generated from that module's own schema, and the module depends on it
 by path. Modules commit the result; the runtime builds from it and never
 regenerates it.

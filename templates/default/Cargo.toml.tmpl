@@ -15,9 +15,9 @@ path = "src/main.rs"
 [dependencies]
 # Written by `dagger generate`. Commit it — the module runtime builds from these
 # sources and never regenerates them.
-dagger-sdk = { path = "./dagger_sdk" }
+dagger = { path = "./dagger" }
 # Pinned by git rev: goish is not published to crates.io. This must stay on the
-# same rev as dagger_sdk/Cargo.toml, or cargo will build two copies of the
+# same rev as dagger/Cargo.toml, or cargo will build two copies of the
 # runtime and the linker will reject the duplicate symbols.
 goish = { git = "https://github.com/cogentica-ai/goish", rev = "ff061453ffd2533bb22ea68c8ccb176616aa4b5e" }
 

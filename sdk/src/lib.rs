@@ -5,7 +5,7 @@
 //! session protocol needs, without libc or a garbage collector. A module built
 //! against it links to a single static binary.
 //!
-//! It is vendored into each module as `dagger_sdk/` by `dagger generate`,
+//! It is vendored into each module as `dagger/` by `dagger generate`,
 //! together with [`gen`], the API bindings generated from that module's own
 //! schema. Modules never regenerate it themselves.
 //!
@@ -50,7 +50,7 @@ pub use module::{
 pub use objects::{Changeset, ObjectId, Workspace};
 
 /// Declare a module's root object and the functions it serves.
-pub use dagger_sdk_macros::{check, function, object};
+pub use dagger_macros::{check, function, object};
 
 use goish::encoding::base64;
 use goish::encoding::json;

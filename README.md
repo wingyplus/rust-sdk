@@ -28,7 +28,7 @@ Backed by [`github.com/dagger/polyfill`](https://github.com/dagger/polyfill).
 | --- | --- |
 | `rust-sdk.dang`, `mod.dang`, `template.dang` | The SDK contract module — `initModule`, `targetRuntime`, and the `@generate` hook |
 | `runtime/` | The module runtime new Rust modules reference. Build-only; see [its README](./runtime/README.md) |
-| `sdk/` | The Rust client library (`dagger-sdk`) and its bindings generator |
+| `sdk/` | The Rust client library (`dagger`) and its bindings generator |
 | `templates/` | Starter templates for `dagger module init rust` |
 | `helpers/render-template/` | Helper that renders a template for a given module name |
 
@@ -53,7 +53,7 @@ dagger generate
 ```
 
 `initModule` seeds the SDK-owned template files, including a working
-`dagger_sdk/`; the engine writes the module config and workspace entries. The
+`dagger/`; the engine writes the module config and workspace entries. The
 module builds and loads straight away — `generate` then replaces its bindings
 with ones derived from your engine's schema.
 
@@ -75,8 +75,8 @@ dagger call rust-sdk init-module --name my-module --path .dagger/modules/my-modu
 
 ## Writing functions
 
-A module's API is declared with two attributes. `#[dagger_sdk::object]` on the
-`impl` block reads the signatures at compile time; `#[dagger_sdk::function]`
+A module's API is declared with two attributes. `#[dagger::object]` on the
+`impl` block reads the signatures at compile time; `#[dagger::function]`
 marks which methods are exposed. Anything unmarked stays private, so helpers
 need no special treatment.
 
@@ -85,10 +85,10 @@ use goish::{fmt, int, string};
 
 pub struct Build;
 
-#[dagger_sdk::object]
+#[dagger::object]
 impl Build {
     /// Build an image and return its tag.        // becomes the description
-    #[dagger_sdk::function]
+    #[dagger::function]
     pub fn image(
         &self,
         #[dagger(default = "alpine:3.21")] base: string,
@@ -104,7 +104,7 @@ impl Build {
 
 #[goish::main]
 fn main() {
-    dagger_sdk::serve::<Build>()
+    dagger::serve::<Build>()
 }
 ```
 
@@ -132,30 +132,30 @@ What a function *is* goes in the marker attribute — the one slot Go writes its
 A Rust module declares one with the `generate` option:
 
 ```rust
-use dagger_sdk::{Changeset, ObjectId, Session, Workspace};
+use dagger::{Changeset, ObjectId, Session, Workspace};
 use goish::string;
 
 /// Write a generated file into the workspace.
-#[dagger_sdk::function(generate)]
+#[dagger::function(generate)]
 pub fn generate(&self, ws: Workspace) -> Changeset {
     let session = match Session::from_env() {
         Some(s) => s,
-        None => dagger_sdk::fail(string("no engine session")),
+        None => dagger::fail(string("no engine session")),
     };
 
     // The workspace's current files: the "before" of the changeset.
     let before = match session
         .query(&(string("{loadWorkspaceFromID(id:")
-            + dagger_sdk::json_string(&ws.id())
+            + dagger::json_string(&ws.id())
             + "){directory(path:\"/\"){id}}}"))
-        .and_then(|d| dagger_sdk::field_string(&d, &["loadWorkspaceFromID", "directory", "id"]))
+        .and_then(|d| dagger::field_string(&d, &["loadWorkspaceFromID", "directory", "id"]))
     {
         Ok(id) => id,
-        Err(message) => dagger_sdk::fail(message),
+        Err(message) => dagger::fail(message),
     };
 
     // Write a file into it, and diff the result back against the before.
-    let quoted = dagger_sdk::json_string(&before);
+    let quoted = dagger::json_string(&before);
     let changes = match session
         .query(&(string("{loadDirectoryFromID(id:")
             + quoted.clone()
@@ -163,10 +163,10 @@ pub fn generate(&self, ws: Workspace) -> Changeset {
             + quoted
             + "){id}}}}"))
         .and_then(|d| {
-            dagger_sdk::field_string(&d, &["loadDirectoryFromID", "withNewFile", "changes", "id"])
+            dagger::field_string(&d, &["loadDirectoryFromID", "withNewFile", "changes", "id"])
         }) {
         Ok(id) => id,
-        Err(message) => dagger_sdk::fail(message),
+        Err(message) => dagger::fail(message),
     };
 
     Changeset::from_id(changes)
@@ -189,8 +189,7 @@ wrappers rather than real objects — enough to satisfy the contract, no more.
 ### Argument options
 
 Options go in `#[dagger(...)]` on the parameter itself. The attribute is
-stripped before `rustc` sees the function, so it needs nothing in scope;
-`#[dagger_sdk(...)]` is accepted too.
+stripped before `rustc` sees the function, so it needs nothing in scope.
 
 | Option | Effect | Go SDK equivalent |
 | --- | --- | --- |
@@ -225,17 +224,17 @@ bindings are generated.
 
 A check validates the project — a test, a lint, a scan — and passes or fails.
 `dagger check` discovers and runs every check a module exposes. Mark one with
-`#[dagger_sdk::check]`, the Rust spelling of the Go SDK's `// +check` pragma and
+`#[dagger::check]`, the Rust spelling of the Go SDK's `// +check` pragma and
 the TypeScript SDK's `@check()` decorator:
 
 ```rust
-#[dagger_sdk::object]
+#[dagger::object]
 impl Build {
     /// The sources are formatted.
-    #[dagger_sdk::check]
+    #[dagger::check]
     pub fn fmt(&self) {
         if !self.sources_are_formatted() {   // a private helper, as above
-            dagger_sdk::fail(string("sources are not formatted"))
+            dagger::fail(string("sources are not formatted"))
         }
     }
 }
@@ -247,7 +246,7 @@ $ dagger check
 
 `check` implies `function`, so a check is also callable as `dagger call fmt`
 and the two attributes need not both be written. A check fails the way any
-function fails — by exiting non-zero, which `dagger_sdk::fail` does with a
+function fails — by exiting non-zero, which `dagger::fail` does with a
 message on stderr.
 
 A check takes no caller arguments: `dagger check` runs it with none, so every
@@ -269,8 +268,8 @@ For every Rust SDK module visible from your current directory:
 dagger generate
 ```
 
-Generation vendors the `dagger-sdk` crate, together with the API bindings
-generated from your engine's schema, into `<module>/dagger_sdk/`. **Commit it** —
+Generation vendors the `dagger` crate, together with the API bindings
+generated from your engine's schema, into `<module>/dagger/`. **Commit it** —
 the runtime builds from the committed sources and never regenerates them.
 
 To exclude a directory tree from bulk generation, drop an empty
@@ -281,7 +280,7 @@ touch some/fixture/.dagger-rust-sdk-skip-generate
 ```
 
 The same `dagger generate` also runs whatever generators your own modules
-declare — see [Generators](#generators). Refreshing `dagger_sdk/` is this SDK's
+declare — see [Generators](#generators). Refreshing `dagger/` is this SDK's
 generator; yours run alongside it.
 
 ## How a Rust module is built

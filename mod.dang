@@ -67,7 +67,7 @@ let cargoGitDir = "/usr/local/cargo/git"
 # Directory the vendored SDK is written to, relative to a module root. Shared
 # with rust-sdk.dang, which seeds it at init so a new module builds before it
 # has ever been generated.
-let genDir = "dagger_sdk"
+let genDir = "dagger"
 
 # The files a consuming module needs from sdk/ in order to compile: the crate
 # manifest, its library sources and the licence. Everything dev-only — the
@@ -122,7 +122,7 @@ type Mod {
 
   """
   Generate this module: vendor the Rust SDK crate and the API bindings
-  generated from the module's schema into `<module>/dagger_sdk`.
+  generated from the module's schema into `<module>/dagger`.
 
   If the generate skip marker is present, the changeset is empty.
   """
