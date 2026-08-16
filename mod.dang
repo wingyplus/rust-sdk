@@ -6,6 +6,43 @@ let rustImage = "rust:1.90-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30
 # Everything in this repository is a goish binary, so codegen links for the same
 # tuple its own .cargo/config.toml names — see runtime/main.dang.
 let cargoTarget = "x86_64-unknown-linux-gnu"
+
+# The platform a finished goish binary runs on. goish only targets x86_64, so
+# codegen is *run* on linux/amd64 whatever the engine is, while being *built*
+# on the engine's own platform. Kept in step with runtime/main.dang, as are the
+# constants below — top-level `let` is file-scoped in Dang, so the two files
+# each carry their own copy.
+let servePlatform: Platform! = "linux/amd64"
+
+# Cargo's per-target linker override for cargoTarget, set by environment rather
+# than in .cargo/config.toml on purpose: sdk/codegen commits that file and it
+# must keep working byte-for-byte unchanged. Debian calls the native driver
+# x86_64-linux-gnu-gcc on an amd64 host and installs the cross driver under the
+# same name elsewhere, so one value covers both cases.
+let crossLinkerEnv = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"
+let crossLinker = "x86_64-linux-gnu-gcc"
+
+# Install the x86_64 cross driver unless the build host is already x86_64.
+# rustc needs no help cross-compiling once `rustup target add` has run — the
+# goish sources compile clean for x86_64 on an arm64 host. Only the link step
+# breaks: rustc shells out to `cc` with -m64, and the stock arm64 driver rejects
+# it ("unrecognized command-line option '-m64'").
+let crossToolchainSetup = "test \"$(uname -m)\" = x86_64 || { apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc-x86-64-linux-gnu; }"
+
+# Cache volumes holding compiled objects are keyed by build host: cargo writes
+# host-architecture build scripts and proc-macro .so files under
+# $CARGO_TARGET_DIR/release/, which an engine of the other architecture cannot
+# exec. The registry and git caches hold source and stay shared.
+let buildHostKey: String! {
+  if (defaultPlatform == "linux/amd64") {
+    "linux-amd64"
+  } else {
+    if (defaultPlatform == "linux/arm64") { "linux-arm64" } else { "other" }
+  }
+}
+
+# Where the built codegen binary lands in the container that runs it.
+let codegenPath = "/usr/local/bin/codegen"
 let cargoTargetDir = "/codegen-target"
 let cargoRegistryDir = "/usr/local/cargo/registry"
 let cargoGitDir = "/usr/local/cargo/git"
@@ -129,9 +166,9 @@ type Mod {
   the generated API bindings.
   """
   let generatedBindings(introspectionJSON: File!): Directory! {
-    codegenBuilder
+    codegenRunner
       .withMountedFile("/schema.json", introspectionJSON)
-      .withExec(["codegen", "--introspection", "/schema.json", "--outdir", "/gen"])
+      .withExec([codegenPath, "--introspection", "/schema.json", "--outdir", "/gen"])
       .directory("/gen")
   }
 
@@ -143,9 +180,15 @@ type Mod {
   tuple rather than directly in `release/`.
   """
   let codegenBuilder: Container! {
-    container
+    # The build container follows the engine's own platform, so rustc runs
+    # natively and cross-links to cargoTarget. On an arm64 engine that replaces
+    # a fully emulated cargo build with a native one.
+    container()
       .from(rustImage)
       .withoutEntrypoint
+      .withExec(["rustup", "target", "add", cargoTarget])
+      .withExec(["sh", "-c", crossToolchainSetup])
+      .withEnvVariable(crossLinkerEnv, crossLinker)
       .withDirectory("/codegen", sdkSourceDir.directory("codegen"))
       .withWorkdir("/codegen")
       # Build outside the source tree: a cache mount inside /codegen would sit
@@ -157,11 +200,21 @@ type Mod {
       # on every generate.
       .withMountedCache(cargoRegistryDir, cacheVolume("rust-sdk-cargo-registry"))
       .withMountedCache(cargoGitDir, cacheVolume("rust-sdk-cargo-git"))
-      .withMountedCache(cargoTargetDir, cacheVolume("rust-sdk-codegen-target"))
+      .withMountedCache(cargoTargetDir, cacheVolume("rust-sdk-codegen-target-" + buildHostKey))
       .withExec(["cargo", "build", "--release", "--locked"])
-      .withExec(["cp", cargoTargetDir + "/" + cargoTarget + "/release/codegen", "/usr/local/bin/codegen"])
-      .withoutMount(cargoTargetDir)
-      .withoutMount(cargoRegistryDir)
-      .withoutMount(cargoGitDir)
+      .withExec(["cp", cargoTargetDir + "/" + cargoTarget + "/release/codegen", codegenPath])
+  }
+
+  """
+  The codegen binary in a container that can actually execute it.
+
+  codegen is a goish binary, so it is x86_64 whatever built it and has to run on
+  servePlatform. It is statically linked with no libc and no dynamic loader, so
+  nothing else needs to be in the image — which also spares an arm64 engine from
+  pulling the amd64 `rust` image just to run it.
+  """
+  let codegenRunner: Container! {
+    container(platform: servePlatform)
+      .withFile(codegenPath, codegenBuilder.file(codegenPath), permissions: 493)
   }
 }

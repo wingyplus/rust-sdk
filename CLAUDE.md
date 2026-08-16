@@ -37,10 +37,56 @@ Practical consequences when writing code here:
   `$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release/<name>`, **not**
   `release/<name>`. `mod.dang` and `runtime/main.dang` both depend on this path.
 - `panic = "abort"` in both profiles. goish never unwinds.
+- goish is Linux x86_64 only — its runtime is x86_64 inline asm — so
+  `cargo target` is always `x86_64-unknown-linux-gnu` and any container that
+  *runs* a goish binary is created with `container(platform: servePlatform)`,
+  i.e. `linux/amd64`. Building is the opposite: build containers follow the
+  engine's own platform and cross-link, so rustc runs natively rather than
+  under emulation. See "Building is cross, running is amd64" below.
 
 The one non-Rust exception is `helpers/render-template/`, a small Go program
 that renders init templates. It runs at init time in a golang container and has
 nothing to do with the module runtime.
+
+## Building is cross, running is amd64
+
+Two different questions, and conflating them is the mistake to avoid:
+
+- **What tuple is the binary?** Always `x86_64-unknown-linux-gnu`. goish has no
+  aarch64 port — it has zero `cfg(target_arch)` gates and ~24 raw x86_64 `asm!`
+  blocks, and compiling it for aarch64 dies with 41 errors of the form
+  ``the `att_syntax` option is only supported on x86``. This is not negotiable
+  until goish itself gains a port, which is upstream work in
+  `cogentica-ai/goish`, not something this repo can do.
+- **What platform does the build run on?** The engine's own. `container()` with
+  no `platform:` argument in `mod.dang` and `runtime/main.dang` follows the
+  engine, and cross-compiles to the tuple above.
+
+rustc cross-compiles happily once `rustup target add x86_64-unknown-linux-gnu`
+has run — the arm64 `rust` image *does* have an x86_64 `core`, contrary to what
+an earlier revision of these docs claimed. The single thing that breaks is the
+link step: rustc shells out to `cc` with `-m64`, and the stock arm64 driver
+answers `unrecognized command-line option '-m64'`. `crossToolchainSetup`
+installs `gcc-x86-64-linux-gnu` when `uname -m` is not `x86_64`, and
+`crossLinkerEnv` points cargo at `x86_64-linux-gnu-gcc` — a name Debian uses for
+the *native* driver on an amd64 host, so one value is correct on both.
+
+That override is set **by environment, never in `.cargo/config.toml`**. Every
+module commits that file and `sdk/codegen` has its own; they must keep working
+byte-for-byte unchanged, which is what keeps this change clear of the
+`rustCrateName`/`toRustCrateName` invariant entirely.
+
+The finished binary is then served from a bare `container(platform:
+servePlatform)` with nothing in it but the binary — goish links statically with
+no libc and no dynamic loader, so nothing else is needed. Serving on amd64 is
+still mandatory: an x86_64 binary cannot be `exec`'d as the entrypoint of an
+arm64 container. Only that one small binary runs emulated; the compile does not.
+
+Cache volumes holding compiled objects (`rust-sdk-module-target-*`,
+`rust-sdk-codegen-target-*`) are suffixed with `buildHostKey` because cargo puts
+host build scripts and proc-macro `.so`s under `$CARGO_TARGET_DIR/release/`,
+which an engine of the other architecture cannot exec. The registry and git
+caches hold source, not objects, and stay shared.
 
 ## Invariants that will bite you
 

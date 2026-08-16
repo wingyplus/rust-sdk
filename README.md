@@ -315,7 +315,10 @@ Two invariants hold the pieces together, and both are load-bearing:
 Each module also carries a `.cargo/config.toml`. It is not boilerplate: it names
 the target tuple explicitly (so goish's bare-metal link flags stay off
 host-built proc-macro crates) and passes `-nostartfiles -nodefaultlibs -static`,
-without which a `no_std` goish binary does not link.
+without which a `no_std` goish binary does not link. Cross-compiling on a
+non-x86_64 engine needs one more thing, a linker that understands `-m64`, and
+the runtime supplies it through the environment rather than this file — so the
+committed `.cargo/config.toml` is identical on every architecture.
 
 ## Manage dependencies and the engine version
 
@@ -338,6 +341,10 @@ What works today:
   resulting static binary as the entrypoint.
 - Both starter templates, which render and build to a stripped, statically
   linked ELF with no interpreter.
+- Any engine platform. goish targets Linux x86_64 only, so a module binary is
+  always x86_64 and is served from a `linux/amd64` container. The build itself
+  runs on the engine's own platform and cross-links, so on an arm64 engine
+  (Apple Silicon) compilation is native — only the finished binary is emulated.
 
 What is stubbed:
 

@@ -17,13 +17,14 @@ how to build and start a Rust module. That is the whole job:
 - `codegen` is a **no-op**. Modules commit their generated `dagger_sdk/`
   directory, so there is nothing to generate at module load. Generation is
   owned by `dagger generate` in the [parent SDK module](../mod.dang).
-- `moduleRuntime` runs `cargo build --release` over the committed sources,
-  copies the resulting binary to `/usr/local/bin/dagger-module`, drops the cargo
-  cache mounts, and sets that binary as the entrypoint.
+- `moduleRuntime` runs `cargo build --release` over the committed sources in a
+  container on the engine's own platform, then copies the resulting binary into
+  a fresh `linux/amd64` container and sets it as the entrypoint.
 
 Because a goish binary is statically linked with no libc and no dynamic loader,
-the entrypoint is a single self-contained file. (Serving it from a `scratch`
-base rather than the build image is an obvious follow-up.)
+the entrypoint is a single self-contained file — so the served image is built
+from a bare `container(platform: servePlatform)` holding nothing else. That also
+spares an arm64 engine from pulling the amd64 `rust` image at all.
 
 ## Invariants worth knowing
 
@@ -38,6 +39,15 @@ base rather than the build image is an obvious follow-up.)
   supported platform and the `[build] target` in each module's
   `.cargo/config.toml`. Naming the target explicitly is what keeps the
   bare-metal link flags off host-built proc-macro crates.
+- **The build follows the engine; the serve container does not.** goish has no
+  aarch64 port, so the binary is always x86_64 and the container it is served
+  from is always `linux/amd64` — an x86_64 binary cannot be `exec`'d as the
+  entrypoint of an arm64 container. The *build*, though, runs on the engine's
+  own platform and cross-links, so on an arm64 engine rustc runs natively
+  instead of under emulation. Only the finished binary is emulated.
+  (The arm64 `rust` image does carry an x86_64 `core`, so `rustup target add`
+  is enough for rustc; what it lacks is a linker that understands `-m64`, which
+  `crossToolchainSetup` installs.)
 - **A module missing `dagger_sdk/` fails fast** with a message naming
   `dagger generate`, rather than letting cargo report an unresolvable path
   dependency.
