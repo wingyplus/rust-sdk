@@ -245,16 +245,16 @@ fn TestDecodeRoundTripsAtDepth3(t: &mut testing::T) {
         Err(why) => t.Fatal(fmt::Sprintf!("decode: %s", why)),
     };
 
-    assertString(t, "stdout", out, "hi\n");
-    assertString(t, "contents", contents, "NAME=alpine");
-    assertString(t, "platform", platform, "linux/amd64");
+    assert_string(t, "stdout", out, "hi\n");
+    assert_string(t, "contents", contents, "NAME=alpine");
+    assert_string(t, "platform", platform, "linux/amd64");
     if size != 42 {
         t.Error(fmt::Sprintf!("size = %d, want 42", size));
     }
 
     match owner {
         Some((name, uid)) => {
-            assertString(t, "owner.name", name, "root");
+            assert_string(t, "owner.name", name, "root");
             if uid != 0 {
                 t.Error(fmt::Sprintf!("owner.uid = %d, want 0", uid));
             }
@@ -268,10 +268,10 @@ fn TestDecodeRoundTripsAtDepth3(t: &mut testing::T) {
     // Every element decodes against the same selection, each from its own
     // alias 0 — the second entry is the one that catches a counter shared
     // across elements.
-    assertString(t, "envVariables[0].name", env[0].0.clone(), "PATH");
-    assertString(t, "envVariables[0].value", env[0].1.clone(), "/bin");
-    assertString(t, "envVariables[1].name", env[1].0.clone(), "HOME");
-    assertString(t, "envVariables[1].value", env[1].1.clone(), "/root");
+    assert_string(t, "envVariables[0].name", env[0].0.clone(), "PATH");
+    assert_string(t, "envVariables[0].value", env[0].1.clone(), "/bin");
+    assert_string(t, "envVariables[1].name", env[1].0.clone(), "HOME");
+    assert_string(t, "envVariables[1].value", env[1].1.clone(), "/root");
 }
 
 /// A null object field is `None` for the whole sub-record, not a record of
@@ -289,7 +289,7 @@ fn TestNullObjectDecodesToNone(t: &mut testing::T) {
         Err(why) => t.Fatal(fmt::Sprintf!("decode: %s", why)),
     };
 
-    assertString(t, "contents", contents, "body");
+    assert_string(t, "contents", contents, "body");
     if owner.is_some() {
         t.Error("a null object decoded to Some");
     }
@@ -334,8 +334,8 @@ fn TestScalarListIsALeaf(t: &mut testing::T) {
     if entrypoint.Len() != 2 {
         t.Fatal(fmt::Sprintf!("entrypoint has %d elements, want 2", entrypoint.Len()));
     }
-    assertString(t, "entrypoint[0]", entrypoint[0].clone(), "/bin/sh");
-    assertString(t, "entrypoint[1]", entrypoint[1].clone(), "-c");
+    assert_string(t, "entrypoint[0]", entrypoint[0].clone(), "/bin/sh");
+    assert_string(t, "entrypoint[1]", entrypoint[1].clone(), "-c");
     if code != 0 {
         t.Error(fmt::Sprintf!("exitCode = %d, want 0", code));
     }
@@ -361,8 +361,8 @@ fn TestChainWalksTheResponse(t: &mut testing::T) {
         Ok(decoded) => decoded,
         Err(why) => t.Fatal(fmt::Sprintf!("decode: %s", why)),
     };
-    assertString(t, "stdout", out, "hi");
-    assertString(t, "platform", platform, "linux/amd64");
+    assert_string(t, "stdout", out, "hi");
+    assert_string(t, "platform", platform, "linux/amd64");
 }
 
 /// Extending a chain leaves the receiver alone, so one object can be the
@@ -373,19 +373,19 @@ fn TestChainExtensionDoesNotMutateTheReceiver(t: &mut testing::T) {
     let debian = base.field("from", arg("address", "debian"));
 
     let c = ContainerFields::new();
-    assertString(
+    assert_string(
         t,
         "alpine",
         alpine.render(&c.platform()),
         "{container{from(address:\"alpine\"){f0:platform}}}",
     );
-    assertString(
+    assert_string(
         t,
         "debian",
         debian.render(&c.platform()),
         "{container{from(address:\"debian\"){f0:platform}}}",
     );
-    assertString(
+    assert_string(
         t,
         "base",
         base.render(&c.platform()),
@@ -444,14 +444,14 @@ fn TestFetchRoundTripsThroughATransport(t: &mut testing::T) {
         Err(why) => t.Fatal(fmt::Sprintf!("fetch: %s", why)),
     };
 
-    assertString(
+    assert_string(
         t,
         "the document sent",
         engine.sent.borrow().clone(),
         "{container{from(address:\"alpine\"){f0:stdout f1:platform}}}",
     );
-    assertString(t, "stdout", out, "hi");
-    assertString(t, "platform", platform, "linux/amd64");
+    assert_string(t, "stdout", out, "hi");
+    assert_string(t, "platform", platform, "linux/amd64");
 }
 
 /// A transport failure comes back as-is rather than being rewrapped, so the
@@ -467,7 +467,7 @@ fn TestFetchPropagatesATransportFailure(t: &mut testing::T) {
     let c = ContainerFields::new();
     match dagger::fetch(&Broken, &Chain::root(), &c.stdout()) {
         Ok(_) => t.Error("fetch succeeded against a broken transport"),
-        Err(why) => assertContains(t, "transport failure", why, "connection refused"),
+        Err(why) => assert_contains(t, "transport failure", why, "connection refused"),
     }
 }
 
@@ -483,7 +483,7 @@ fn TestDecodeErrorsNameWhatWentWrong(t: &mut testing::T) {
     let mut n: usize = 0;
     match selection.decode(&response, &mut n) {
         Ok(_) => t.Error("decoding a response missing f1 succeeded"),
-        Err(why) => assertContains(t, "missing alias", why, "f1"),
+        Err(why) => assert_contains(t, "missing alias", why, "f1"),
     }
 
     let selection = c.exit_code();
@@ -491,7 +491,7 @@ fn TestDecodeErrorsNameWhatWentWrong(t: &mut testing::T) {
     let mut n: usize = 0;
     match selection.decode(&response, &mut n) {
         Ok(_) => t.Error("decoding a string into an int succeeded"),
-        Err(why) => assertContains(t, "wrong scalar type", why, "exitCode"),
+        Err(why) => assert_contains(t, "wrong scalar type", why, "exitCode"),
     }
 
     // A nested failure is prefixed by the path it was found under, so the
@@ -503,8 +503,8 @@ fn TestDecodeErrorsNameWhatWentWrong(t: &mut testing::T) {
     match selection.decode(&response, &mut n) {
         Ok(_) => t.Error("decoding a string into a nested int succeeded"),
         Err(why) => {
-            assertContains(t, "nested failure", why.clone(), "file");
-            assertContains(t, "nested failure", why, "size");
+            assert_contains(t, "nested failure", why.clone(), "file");
+            assert_contains(t, "nested failure", why, "size");
         }
     }
 }
@@ -547,13 +547,13 @@ fn parse(t: &testing::T, text: &'static str) -> json::Value {
     value
 }
 
-fn assertString(t: &testing::T, what: &'static str, got: string, want: &'static str) {
+fn assert_string(t: &testing::T, what: &'static str, got: string, want: &'static str) {
     if got != string(want) {
         t.Error(fmt::Sprintf!("%s = %q, want %q", what, got, want));
     }
 }
 
-fn assertContains(t: &testing::T, what: &'static str, got: string, want: &'static str) {
+fn assert_contains(t: &testing::T, what: &'static str, got: string, want: &'static str) {
     if !goish::strings::Contains(got.clone(), want) {
         t.Error(fmt::Sprintf!("%s: %q does not mention %q", what, got, want));
     }
