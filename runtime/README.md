@@ -30,7 +30,7 @@ base rather than the build image is an obvious follow-up.)
 - **The binary name is derived, not configured.** `toRustCrateName` in
   `main.dang` turns the Dagger module name into the cargo package name, which is
   the filename cargo emits. It must stay byte-for-byte identical to
-  `rustCrateName` in [`helpers/render-template/main.go`](../helpers/render-template/main.go),
+  `rust_crate_name` in [`helpers/render-template/src/lib.rs`](../helpers/render-template/src/lib.rs),
   which writes that same name into the scaffolded `Cargo.toml`. If the two
   diverge, the build succeeds and the entrypoint points at a path that does not
   exist.

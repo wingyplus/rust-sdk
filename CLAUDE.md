@@ -38,23 +38,40 @@ Practical consequences when writing code here:
   `release/<name>`. `mod.dang` and `runtime/main.dang` both depend on this path.
 - `panic = "abort"` in both profiles. goish never unwinds.
 
-The one non-Rust exception is `helpers/render-template/`, a small Go program
-that renders init templates. It runs at init time in a golang container and has
-nothing to do with the module runtime.
+There is no exception left: `helpers/render-template/`, which renders init
+templates, was a Go program and is now a goish binary too. It runs at init time
+in the toolchain image and has nothing to do with the module runtime, but it is
+built and tested like every other crate here.
 
 ## Invariants that will bite you
 
 - **The goish git pin must match across crates.** goish is not on crates.io, so
-  it is pinned by rev in `sdk/Cargo.toml`, `sdk/codegen/Cargo.toml` and every
-  `templates/*/Cargo.toml.tmpl`. Cargo treats two revs as two different crates:
-  if a module and its vendored `dagger_sdk` disagree, the link fails on
-  duplicate runtime symbols. Bump them together.
-- **Two name derivations must stay byte-for-byte identical.** `rustCrateName` in
-  `helpers/render-template/main.go` writes the cargo `[package]` name at init
-  time; `toRustCrateName` in `runtime/main.dang` recomputes it at call time to
-  locate the built binary. A divergence builds fine and then fails to start.
+  it is pinned by rev in `sdk/Cargo.toml`, `sdk/codegen/Cargo.toml`,
+  `helpers/render-template/Cargo.toml` and every `templates/*/Cargo.toml.tmpl`.
+  Cargo treats two revs as two different crates: if a module and its vendored
+  `dagger_sdk` disagree, the link fails on duplicate runtime symbols. Bump them
+  together.
+- **Two name derivations must stay byte-for-byte identical.** `rust_crate_name`
+  in `helpers/render-template/src/lib.rs` writes the cargo `[package]` name at
+  init time; `toRustCrateName` in `runtime/main.dang` recomputes it at call time
+  to locate the built binary. A divergence builds fine and then fails to start.
   `TestNameConversionsMatchDang` guards the cases a general-purpose case library
-  gets wrong (`HTTPServer` → `http_server`, not `httpserver`).
+  gets wrong (`HTTPServer` → `http_server`, not `httpserver`), and
+  `TestDangCrateNameMatchesRust` replays the dang recipe so the dang side cannot
+  drift unnoticed.
+- **The helper's crate name derivation cannot be spelled as the dang one is.**
+  `toRustCrateName` is three `replaceMatches` calls with `${1}_${2}`
+  replacements; goish's `regexp.ReplaceAllString` treats its replacement as
+  literal text, so `${1}` expansion is not available to the Rust side. The
+  helper folds the three substitutions into one left-to-right scan instead —
+  don't "restore" the regexes, and don't reach for a case library either
+  (that's what the acronym cases above are about). The scan is checked against
+  the dang recipe by replaying it through goish's regexp engine, group
+  expansion and all, in `TestDangCrateNameMatchesRust`.
+- **The helper renders a subset of Go's `text/template`, and it is strict.** An
+  action is `{{ .Field }}` and nothing else; unknown fields and unsupported
+  actions are errors rather than Go's silent `<no value>`. Templates that need
+  more than a field reference need the renderer extended first.
 - **Cargo caches git dependencies under `$CARGO_HOME/git`, not
   `$CARGO_HOME/registry`.** goish is the only real dependency and it is a git
   dep, so caching just the registry re-clones it on every build. Both mounts
@@ -99,7 +116,7 @@ nothing to do with the module runtime.
 | `runtime/` | Build-only module runtime new Rust modules point at |
 | `sdk/` | The `dagger-sdk` crate and `sdk/codegen`, its bindings generator |
 | `templates/` | Starters for `dagger module init rust` |
-| `helpers/render-template/` | Go helper that renders a template for a module name |
+| `helpers/render-template/` | Helper that renders a template for a module name |
 
 ## Working on this repo
 
@@ -107,11 +124,23 @@ Dang sources: `rust-sdk.dang`, `mod.dang`, `template.dang`, `runtime/main.dang`.
 Format with `dang fmt -w`, but check the binary first — a `dang` older than the
 `pub` keyword will silently strip `pub` from every declaration.
 
-Verify the Go helper directly:
+Verify the init helper directly:
 
 ```sh
-cd helpers/render-template && go test ./...
+cd helpers/render-template && cargo test
 ```
+
+`cargo test` works, but not the way it usually does, and the arrangement is
+easy to break. libtest is `std`, and its `panic_impl` collides with goish's, so
+there are no `#[test]` functions: `tests/render_template.rs` is a
+`harness = false` target whose `main` hands a list of functions to goish's
+`testing::Main` — the shape `go test` generates — and cargo reads its exit
+status. Three things hold it up. Every other target sets `test = false`, or
+cargo compiles the lib and the bin a second time as test targets and hits the
+lang-item collision anyway. `-C panic=abort` is in `.cargo/config.toml` rather
+than only in the profiles, because cargo ignores `panic` for the test profile
+and goish cannot unwind. And a new test has to be added to the list in `main`,
+or it silently never runs.
 
 Run the shared SDK contract suite:
 
