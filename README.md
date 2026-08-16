@@ -148,6 +148,40 @@ than a failure at module load.
 function returning nothing maps to `VOID_KIND`. Object types such as `Container`
 are rejected at compile time until the bindings are generated.
 
+### Checks
+
+A check validates the project — a test, a lint, a scan — and passes or fails.
+`dagger check` discovers and runs every check a module exposes. Mark one with
+`#[dagger_sdk::check]`, the Rust spelling of the Go SDK's `// +check` pragma and
+the TypeScript SDK's `@check()` decorator:
+
+```rust
+#[dagger_sdk::object]
+impl Build {
+    /// The sources are formatted.
+    #[dagger_sdk::check]
+    pub fn fmt(&self) {
+        if !self.sources_are_formatted() {   // a private helper, as above
+            dagger_sdk::fail(string("sources are not formatted"))
+        }
+    }
+}
+```
+
+```console
+$ dagger check
+```
+
+`check` implies `function`, so a check is also callable as `dagger call fmt`
+and the two attributes need not both be written. A check fails the way any
+function fails — by exiting non-zero, which `dagger_sdk::fail` does with a
+message on stderr.
+
+A check takes no caller arguments: `dagger check` runs it with none, so every
+argument must be an `Option<T>` or carry a `default`. The engine's response to a
+check it cannot run is to leave it out of the check tree, where it would simply
+never appear, so the macro rejects a required argument at compile time instead.
+
 ## Generate SDK files
 
 For a single module:
@@ -239,9 +273,10 @@ What is stubbed:
   lazily-built selection sent only when a leaf value is requested. Parsing the
   schema is goish's `encoding/json`; no serde equivalent is needed.
 
-Function declaration and dispatch **work**: `#[dagger::object]` and
-`#[dagger::function]` read signatures at compile time and emit a static table
-the entrypoint walks, with argument options in `#[dagger(...)]`. This is the one
+Function declaration and dispatch **work**: `#[dagger::object]`,
+`#[dagger::function]` and `#[dagger::check]` read signatures at compile time and
+emit a static table the entrypoint walks, with argument options in
+`#[dagger(...)]`. This is the one
 piece with no Go analogue — the Go SDK recovers signatures by parsing the user's
 package — so it is proc-macros rather than a port.
 

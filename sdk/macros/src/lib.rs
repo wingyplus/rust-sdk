@@ -25,6 +25,9 @@
 //! `+default`, `+defaultPath`, `+ignore` pragmas. Optionality is carried by
 //! `Option<T>` rather than a marker, and a parameter with a `default` is
 //! optional by construction.
+//!
+//! [`macro@check`] marks a function `dagger check` should run, the Go SDK's
+//! `+check` pragma.
 
 extern crate proc_macro;
 
@@ -63,6 +66,49 @@ use proc_macro::{Delimiter, TokenStream, TokenTree};
 /// gets there.
 #[proc_macro_attribute]
 pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+/// Mark a method as a check: something `dagger check` runs.
+///
+/// A check validates the project — a test, a lint, a scan — and passes or fails.
+/// `dagger check` discovers every check a module exposes and runs them all,
+/// which is the Go SDK's `// +check` pragma and the TypeScript SDK's `@check()`
+/// decorator.
+///
+/// ```ignore
+/// #[dagger_sdk::object]
+/// impl Build {
+///     /// Lint the project.
+///     #[dagger_sdk::check]
+///     pub fn lint(&self) {
+///         if !self.sources_are_formatted() {
+///             ::dagger_sdk::fail(::goish::convert::string("lint failed"))
+///         }
+///     }
+/// }
+/// ```
+///
+/// ```console
+/// $ dagger check
+/// ```
+///
+/// A check is also an ordinary function — it is still callable as
+/// `dagger call lint` — so this attribute implies [`macro@function`] and the two
+/// need not both be written. It fails the same way any other function does: by
+/// exiting non-zero, which [`dagger_sdk::fail`] does with a message on stderr.
+///
+/// # No required arguments
+///
+/// `dagger check` runs a check with no arguments, so every argument must be an
+/// `Option<T>` or carry a `#[dagger(default = ...)]`. A check with a required
+/// argument cannot be run, and the engine deals with that by leaving it out of
+/// the check tree — it simply never appears in `dagger check`. Since that is
+/// silent, the macro rejects it at compile time instead, naming the argument.
+///
+/// [`dagger_sdk::fail`]: ../dagger_sdk/fn.fail.html
+#[proc_macro_attribute]
+pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
@@ -140,6 +186,11 @@ pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `default` — a defaulted argument the caller may omit is optional by
 /// construction. There is no `+optional` marker to write.
 ///
+/// # Checks
+///
+/// A method marked [`macro@check`] is exported like any other and additionally
+/// flagged for `dagger check`, which runs every check a module exposes.
+///
 /// # Supported types
 ///
 /// `string` (and `String`/`&str`), `int`, and `bool`, plus `Option<T>` of each.
@@ -211,7 +262,12 @@ fn is_dagger_attr(stream: TokenStream) -> bool {
     }
     matches!(
         path.as_str(),
-        "dagger" | "dagger_sdk" | "dagger::function" | "dagger_sdk::function"
+        "dagger"
+            | "dagger_sdk"
+            | "dagger::function"
+            | "dagger_sdk::function"
+            | "dagger::check"
+            | "dagger_sdk::check"
     )
 }
 
@@ -381,7 +437,9 @@ fn camel_case(name: &str) -> String {
 
 /// Build the `Object` impl for the annotated block.
 fn expand(item: TokenStream) -> Result<TokenStream, String> {
-    let (type_name, functions) = parse::parse_impl(item, "function")?;
+    // `check` is a marker of its own rather than an option on `function`, so a
+    // method carrying only `#[dagger::check]` is still exported.
+    let (type_name, functions) = parse::parse_impl(item, &["function", "check"])?;
 
     let mut defs = String::new();
     let mut arms = String::new();
@@ -445,6 +503,16 @@ fn function_def(f: &Function) -> Result<String, String> {
         // A defaulted argument is optional whether or not it is an Option<T>:
         // the caller may leave it out and get the default.
         let optional = kind.optional || !options.default_value.is_empty();
+
+        // `dagger check` runs a check with no arguments. The engine's answer to
+        // a check that cannot be run is to leave it out of the check tree, so it
+        // would just never appear — catch it here, where the message can say why.
+        if f.has_marker("check") && !optional {
+            return Err(format!(
+                "`{}` is a check, so it is run with no arguments, but `{}` is required; give it a `#[dagger(default = ...)]` or make it an `Option<T>`",
+                f.name, param.name
+            ));
+        }
         let ignore = options
             .ignore
             .iter()
@@ -467,10 +535,11 @@ fn function_def(f: &Function) -> Result<String, String> {
 
     let ret = kind_of(&f.return_ty)?;
     Ok(format!(
-        "::dagger_sdk::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, args: &[{args}] }},",
+        "::dagger_sdk::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, is_check: {is_check}, args: &[{args}] }},",
         name = quote_str(&camel_case(&f.name)),
         doc = quote_str(&f.doc),
         ret = quote_str(ret.kind),
+        is_check = f.has_marker("check"),
         args = args,
     ))
 }

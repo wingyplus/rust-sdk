@@ -52,6 +52,15 @@ pub struct Function {
     pub return_ty: String,
     /// Whether the function takes a receiver (`&self` / `self`).
     pub takes_self: bool,
+    /// Which of the requested markers the method carried — `function`, `check`.
+    pub markers: Vec<String>,
+}
+
+impl Function {
+    /// Whether the method carried a given marker attribute.
+    pub fn has_marker(&self, marker: &str) -> bool {
+        self.markers.iter().any(|m| m == marker)
+    }
 }
 
 /// Strip the surrounding quotes from a string literal and undo its escapes.
@@ -175,10 +184,11 @@ pub fn render(tokens: &[TokenTree]) -> String {
         .to_string()
 }
 
-/// Parse the body of an `impl` block into the functions marked with `marker`.
+/// Parse the body of an `impl` block into the functions carrying any of
+/// `markers`, recording which ones each carried.
 ///
 /// Returns the impl's type name alongside them.
-pub fn parse_impl(item: TokenStream, marker: &str) -> Result<(String, Vec<Function>), String> {
+pub fn parse_impl(item: TokenStream, markers: &[&str]) -> Result<(String, Vec<Function>), String> {
     let tokens: Vec<TokenTree> = item.into_iter().collect();
     let mut cursor = 0;
 
@@ -210,11 +220,16 @@ pub fn parse_impl(item: TokenStream, marker: &str) -> Result<(String, Vec<Functi
         _ => return Err("`impl` block has no body".to_string()),
     };
 
-    Ok((type_name, parse_items(body, marker)?))
+    Ok((type_name, parse_items(body, markers)?))
+}
+
+/// Whether an attribute names a marker, as `#[marker]` or `#[path::marker]`.
+fn is_marker(attr: &Attr, marker: &str) -> bool {
+    attr.path == marker || attr.path.ends_with(&format!("::{marker}"))
 }
 
 /// Walk the items of an impl body, collecting the marked functions.
-fn parse_items(body: TokenStream, marker: &str) -> Result<Vec<Function>, String> {
+fn parse_items(body: TokenStream, markers: &[&str]) -> Result<Vec<Function>, String> {
     let tokens: Vec<TokenTree> = body.into_iter().collect();
     let mut cursor = 0;
     let mut functions = Vec::new();
@@ -276,7 +291,12 @@ fn parse_items(body: TokenStream, marker: &str) -> Result<Vec<Function>, String>
         }
         cursor += 1; // the body
 
-        if !attrs.iter().any(|a| a.path == marker || a.path.ends_with(marker)) {
+        let found: Vec<String> = markers
+            .iter()
+            .filter(|marker| attrs.iter().any(|a| is_marker(a, marker)))
+            .map(|marker| marker.to_string())
+            .collect();
+        if found.is_empty() {
             continue;
         }
 
@@ -295,7 +315,7 @@ fn parse_items(body: TokenStream, marker: &str) -> Result<Vec<Function>, String>
             text.trim_start_matches("->").trim().to_string()
         };
 
-        functions.push(Function { name, doc, params, return_ty, takes_self });
+        functions.push(Function { name, doc, params, return_ty, takes_self, markers: found });
     }
 
     Ok(functions)

@@ -24,9 +24,11 @@
 //!
 //! # Status
 //!
-//! Registration works, so a module loads and serves its API. Step 3 does not:
-//! there is no way yet to declare functions, so [`serve`] registers an object
-//! with no functions and refuses any invocation. See the repository README.
+//! The protocol above runs end to end: [`serve`] registers what the module
+//! serves — its functions, their arguments, and which of them are checks — and
+//! dispatches an incoming call. What is missing is the other direction, a module
+//! calling the engine API back: the generated bindings are a placeholder, so
+//! function types are limited to scalars. See the repository README.
 
 #![no_std]
 
@@ -43,7 +45,7 @@ pub use module::{
 };
 
 /// Declare a module's root object and the functions it serves.
-pub use dagger_sdk_macros::{function, object};
+pub use dagger_sdk_macros::{check, function, object};
 
 use goish::encoding::base64;
 use goish::encoding::json;
@@ -283,6 +285,13 @@ fn build_function(session: &Session, def: &FunctionDef) -> Result<string, string
 
     if !def.doc.is_empty() {
         query = query + "withDescription(description:" + json_string(&string(def.doc)) + "){";
+        depth += 1;
+    }
+
+    // Flags the function for `dagger check`. It takes no arguments — the whole
+    // effect is the flag.
+    if def.is_check {
+        query = query + "withCheck{";
         depth += 1;
     }
 

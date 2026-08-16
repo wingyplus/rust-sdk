@@ -35,6 +35,8 @@ pub struct FunctionDef {
     pub doc: &'static str,
     /// The engine's TypeDefKind for the return value.
     pub return_kind: &'static str,
+    /// From `#[dagger::check]`: `dagger check` runs this function.
+    pub is_check: bool,
     pub args: &'static [ArgDef],
 }
 
