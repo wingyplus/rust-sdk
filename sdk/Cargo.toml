@@ -8,8 +8,27 @@ license = "Apache-2.0"
 description = "Dagger client library for Rust modules, built on goish."
 repository = "https://github.com/wingyplus/rust-sdk"
 
+# `test = false` is what makes `cargo test` work at all. Cargo would otherwise
+# compile the lib a second time *as* a test target, and that links libtest,
+# which is `std`: `std` and goish both define the `panic_impl` lang item, so
+# they collide (E0152) before a single test runs. The tests live in one
+# harness-less target instead — see tests/querybuilder.rs. `doctest = false` is the
+# same story for doc examples, and keeps a stray ``` block from reintroducing
+# it; the examples in these docs are `ignore`d anyway, since they show generated
+# code that does not exist yet.
 [lib]
 path = "src/lib.rs"
+test = false
+doctest = false
+
+# goish ships Go's `testing` package, so the suite is a `main` that hands its
+# tests to `testing::Main` — the same shape `go test` generates — rather than
+# `#[test]` functions libtest collects. `harness = false` tells cargo to run the
+# binary and read its exit status instead of injecting a harness of its own.
+[[test]]
+name = "querybuilder"
+path = "tests/querybuilder.rs"
+harness = false
 
 [dependencies]
 # Pinned by git rev: goish is not published to crates.io. The same rev is

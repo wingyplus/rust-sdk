@@ -1,0 +1,32 @@
+# Only read when cargo is invoked from this directory — that is, when the SDK
+# crate is built or tested on its own. A module that vendors this crate as
+# `dagger/` runs cargo from its own root, so this file has no effect there; the
+# module's own .cargo/config.toml (from templates/*) carries the same flags.
+#
+# It exists for `cargo test`: the suite in tests/ links a real goish binary, and
+# a goish binary does not link without the flags below.
+
+# Build with an explicit target tuple so proc-macros (host crates) are built
+# without the bare-metal link flags. dagger-macros is one, so without this the
+# rustflags leak into it and break PIC.
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+# Strip Rust's default startup files and the default C library. goish provides
+# _start itself (see #[goish::main]) and never calls into libc. These flags only
+# apply to artifacts for the named target — host tools are unaffected.
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    # Redundant with `panic = "abort"` in a module's profiles — except for the
+    # test profile, where cargo ignores that setting and would hand goish a
+    # build that unwinds ("unwinding panics are not supported without std").
+    "-C", "panic=abort",
+    "-C", "link-arg=-nostartfiles",
+    "-C", "link-arg=-nodefaultlibs",
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-Wl,--no-dynamic-linker",
+    "-C", "relocation-model=static",
+    # Force-emit frame pointers so goish's SIGSEGV handler can walk the RBP
+    # chain to produce a backtrace.
+    "-C", "force-frame-pointers=yes",
+]

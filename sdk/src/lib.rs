@@ -40,20 +40,32 @@
 /// whole module with bindings derived from the engine's introspection schema.
 pub mod gen;
 
-/// Talking to the Dagger Engine: the session it starts this module with.
+/// Talking to the Dagger Engine: the session, and sending a selection over it.
 pub mod engine;
 
 /// What this module declares, and how an incoming call reaches it.
 pub mod module;
 
+/// Multi-field selection: the query language the other two exchange.
+///
+/// Belongs to neither side — [`engine`] carries what it builds, [`gen`] is
+/// written against it, and it depends on neither. Unlike [`gen`] it is
+/// hand-written and stays put; see the module docs.
+pub mod querybuilder;
+
 mod objects;
 
-pub use engine::{field, field_string, Session, SESSION_PORT_ENV, SESSION_TOKEN_ENV};
+pub use engine::{
+    fetch, field, field_string, Session, Transport, SESSION_PORT_ENV, SESSION_TOKEN_ENV,
+};
 pub use module::{
     encode_bool, encode_int, encode_object, encode_string, encode_void, serve, ArgDef, Arguments,
     FunctionDef, Object,
 };
 pub use objects::{Changeset, ObjectId, Workspace};
+pub use querybuilder::{
+    Chain, Field, Fields, FromJson, Leaf, ListField, OptField, Sel, Sub, SubList, SubOpt,
+};
 
 /// Declare a module's root object and the functions it serves.
 pub use dagger_macros::{check, function, object};

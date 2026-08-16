@@ -171,7 +171,17 @@ caches hold source, not objects, and stay shared.
   the crate root. `dagger generate` replaces `src/gen/` wholesale, so moving
   them there would delete them from every generated module: a module with a
   `#[dagger::function(generate)]` would compile until the first `generate` and
-  never again.
+  never again. `sdk/src/querybuilder.rs` is at the crate root for exactly the
+  same reason: the generated bindings are written *against* it, so it cannot
+  live in what generation replaces.
+- **`sdk/tests/` is not vendored, and its `[[test]]` target is.**
+  `vendoredSdkFiles` in `mod.dang` ships `Cargo.toml` and `src/**/*.rs` and
+  nothing else, so a module gets a manifest naming a test target whose file it
+  does not have. That is fine — cargo only resolves a target's path when it
+  builds that target, and a module never builds the SDK's tests — but it is
+  fine by luck rather than by design, so it is checked: a consumer crate
+  path-depending on a `tests/`-less copy builds clean. Don't add a `[[bin]]` or
+  `[[example]]` to `sdk/Cargo.toml` on the same assumption without re-checking.
 - **The engine owns module config.** `initModule` must not write `dagger.json`
   or `dagger-module.toml`; it returns only SDK-owned files. The engine merges in
   its own bookkeeping.
@@ -211,6 +221,13 @@ lang-item collision anyway. `-C panic=abort` is in `.cargo/config.toml` rather
 than only in the profiles, because cargo ignores `panic` for the test profile
 and goish cannot unwind. And a new test has to be added to the list in `main`,
 or it silently never runs.
+
+The SDK crate's own suite — the query builder in `sdk/src/querybuilder.rs` —
+runs the same way, under the same rules:
+
+```sh
+cd sdk && cargo test
+```
 
 Run the shared SDK contract suite:
 

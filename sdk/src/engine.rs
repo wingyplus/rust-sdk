@@ -2,7 +2,8 @@
 //!
 //! The engine starts a module binary with the session's port and token in the
 //! environment and listens for GraphQL on loopback. [`Session`] is that
-//! connection.
+//! connection; [`fetch`] is how a selection built by
+//! [`querybuilder`](crate::querybuilder) crosses it.
 
 use goish::encoding::base64;
 use goish::encoding::json;
@@ -10,6 +11,7 @@ use goish::net::http;
 use goish::{bytes, io, nil, os, string};
 
 use crate::json_string;
+use crate::querybuilder::{Chain, Sel};
 
 /// Environment variable naming the port the engine session listens on.
 pub const SESSION_PORT_ENV: &str = "DAGGER_SESSION_PORT";
@@ -143,4 +145,43 @@ pub fn field_string(value: &json::Value, path: &[&'static str]) -> Result<string
         Some(s) => Ok(s.clone()),
         None => Err(string("expected a string in the engine response")),
     }
+}
+
+/// Something that can answer a GraphQL document.
+///
+/// [`Session`] is the real one. The trait exists so that [`fetch`] can be
+/// tested against a canned reply, and so a caller with its own client — a
+/// recording proxy, a retrying wrapper — can supply it without this crate
+/// growing a policy about either.
+///
+/// Deliberately object-safe: `&dyn Transport` works, since the generic lives on
+/// [`fetch`] rather than here.
+pub trait Transport {
+    /// Send one GraphQL document and return its `data` object.
+    ///
+    /// The error is a message rather than a goish `error` for the reason
+    /// [`Session::query`] gives: every failure — transport, HTTP status,
+    /// malformed body, GraphQL `errors` — reaches the caller with one shape.
+    fn query(&self, document: &string) -> Result<json::Value, string>;
+}
+
+impl Transport for Session {
+    fn query(&self, document: &string) -> Result<json::Value, string> {
+        Session::query(self, document)
+    }
+}
+
+/// Render `sel` at the end of `chain`, send it, and decode the reply. One
+/// round trip.
+///
+/// `?Sized` so this takes `&dyn Transport` as readily as a concrete session:
+/// the monomorphisation that matters is over `S`, which is where the
+/// zero-overhead decode comes from.
+pub fn fetch<T: Transport + ?Sized, S: Sel>(
+    transport: &T,
+    chain: &Chain,
+    sel: &S,
+) -> Result<S::Out, string> {
+    let data = transport.query(&chain.render(sel))?;
+    chain.decode(&data, sel)
 }
