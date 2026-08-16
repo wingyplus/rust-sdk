@@ -375,12 +375,13 @@ dagger -m github.com/dagger/sdk-sdk -W . check
 Test the template helper directly:
 
 ```sh
-cd helpers/render-template && cargo run --bin render-template-test
+cd helpers/render-template && cargo test
 ```
 
-The helper is `no_std` on goish like the rest of the repository, so its tests
-are a binary built on goish's `testing` package rather than a `cargo test`
-target — libtest's harness is `std`.
+The helper is `no_std` on goish like the rest of the repository, so the suite is
+a `harness = false` target built on goish's `testing` package rather than
+`#[test]` functions — libtest is `std`, and its panic handler collides with
+goish's.
 
 ## Licence
 

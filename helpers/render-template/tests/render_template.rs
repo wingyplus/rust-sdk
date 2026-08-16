@@ -1,13 +1,15 @@
 //! Test suite for `render-template`.
 //!
-//! This is a binary rather than a `cargo test` target: libtest's harness is
-//! `std`, and this crate is `no_std` on goish. goish ships Go's `testing`
-//! package instead, so the tests are ordinary functions assembled into a list
-//! and handed to `testing::Main` — the same shape `go test` generates.
-//!
 //! ```sh
-//! cd helpers/render-template && cargo run --bin render-template-test
+//! cd helpers/render-template && cargo test
 //! ```
+//!
+//! This is a `harness = false` target: libtest is `std`, and its `panic_impl`
+//! collides with goish's, so there are no `#[test]` functions to collect. goish
+//! ships Go's `testing` package instead, so the tests are ordinary functions
+//! assembled into a list and handed to `testing::Main` — the same shape
+//! `go test` generates — and cargo reads the exit status. Add a test to the
+//! list in `main` or it never runs.
 
 #![no_std]
 #![no_main]

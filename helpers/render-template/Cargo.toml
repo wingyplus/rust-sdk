@@ -7,21 +7,32 @@ rust-version = "1.86"
 publish = false
 description = "Renders a Rust SDK init template for a Dagger module name."
 
+# `test = false` on every non-test target, here and below, is what makes
+# `cargo test` work at all. Cargo would otherwise compile the lib and the bin a
+# second time each *as* test targets, and those link libtest, which is `std`:
+# `std` and goish both define the `panic_impl` lang item, so they collide before
+# a single test runs. The tests live in one harness-less target instead — see
+# tests/render_template.rs. `doctest = false` is the same story for the doc
+# examples, and keeps a stray ``` block from reintroducing it.
 [lib]
 name = "render_template"
 path = "src/lib.rs"
+test = false
+doctest = false
 
 [[bin]]
 name = "render-template"
 path = "src/main.rs"
+test = false
 
-# The test suite is a second binary rather than `cargo test`: libtest's harness
-# is `std`, and this crate links with -nostartfiles against goish's runtime, so
-# a test target cannot be built for it. goish supplies `testing::Main` for
-# exactly this — see src/test_main.rs, and README.md for how to run it.
-[[bin]]
-name = "render-template-test"
-path = "src/test_main.rs"
+# goish ships Go's `testing` package, so the suite is a `main` that hands its
+# tests to `testing::Main` — the same shape `go test` generates — rather than
+# `#[test]` functions libtest collects. `harness = false` tells cargo to run the
+# binary and read its exit status instead of injecting a harness of its own.
+[[test]]
+name = "render_template"
+path = "tests/render_template.rs"
+harness = false
 
 [dependencies]
 # The only dependency, and the same one the SDK crate and every module use.
@@ -30,12 +41,23 @@ path = "src/test_main.rs"
 # ../../templates/*/Cargo.toml.tmpl.
 goish = { git = "https://github.com/cogentica-ai/goish", rev = "ff061453ffd2533bb22ea68c8ccb176616aa4b5e" }
 
-# goish supplies its own runtime and never unwinds.
+# goish supplies its own runtime and never unwinds, so both profiles abort.
+#
+# Unlike the shipped crates, this one does not ask for `lto` or
+# `codegen-units = 1`. Nothing ships: the binary is built in a container,
+# renders a handful of files and is thrown away, so the only thing its build
+# settings buy is time on the init path. Measured cold, from an empty target
+# directory: 42s without LTO against 83s with it, for the same rendering
+# throughput to within a millisecond over a 600-file tree. `strip` stays because
+# it costs nothing and keeps the cache volume small.
+#
+# `panic = "abort"` is not a preference — a goish binary does not link without
+# it — and the dev profile is not a shortcut: a debug build of goish renders
+# templates/default in ~630ms against ~1.5ms for release, so the container
+# builds `--release`.
 [profile.release]
 panic = "abort"
-lto = true
 strip = true
-codegen-units = 1
 
 [profile.dev]
 panic = "abort"

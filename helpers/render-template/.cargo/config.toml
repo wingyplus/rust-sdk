@@ -12,6 +12,11 @@ target = "x86_64-unknown-linux-gnu"
 # apply to artifacts for the named target — host tools are unaffected.
 [target.x86_64-unknown-linux-gnu]
 rustflags = [
+    # Redundant with `panic = "abort"` in both profiles — except for the test
+    # profile, where cargo ignores that setting and would hand goish a build
+    # that unwinds ("unwinding panics are not supported without std"). Setting
+    # it here covers `cargo test` too, which is how the suite runs.
+    "-C", "panic=abort",
     "-C", "link-arg=-nostartfiles",
     "-C", "link-arg=-nodefaultlibs",
     "-C", "link-arg=-static",

@@ -238,8 +238,9 @@ type RustSdk {
 
   The helper is `no_std` Rust on goish, so — like sdk/codegen — it carries its
   own `.cargo/config.toml` and the binary lands under the target tuple rather
-  than directly in `release/`. Only the `render-template` bin is built; the
-  crate's test binary is dev-only.
+  than directly in `release/`. It is built `--release` because a debug goish
+  build renders the same starter roughly four hundred times slower, and its
+  own crate skips LTO because nothing here ships — see its Cargo.toml.
   """
   let renderedTemplate(name: String!, template: String!): Directory! {
     container

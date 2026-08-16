@@ -127,14 +127,20 @@ Format with `dang fmt -w`, but check the binary first — a `dang` older than th
 Verify the init helper directly:
 
 ```sh
-cd helpers/render-template && cargo run --bin render-template-test
+cd helpers/render-template && cargo test
 ```
 
-Its tests are a binary rather than a `cargo test` target: libtest's harness is
-`std`, and every crate here is `no_std` and links with `-nostartfiles`. goish
-ships Go's `testing` package for exactly this, so the tests are plain functions
-handed to `testing::Main` — the same shape `go test` generates. Add one to the
-list in `src/test_main.rs`'s `main` or it never runs.
+`cargo test` works, but not the way it usually does, and the arrangement is
+easy to break. libtest is `std`, and its `panic_impl` collides with goish's, so
+there are no `#[test]` functions: `tests/render_template.rs` is a
+`harness = false` target whose `main` hands a list of functions to goish's
+`testing::Main` — the shape `go test` generates — and cargo reads its exit
+status. Three things hold it up. Every other target sets `test = false`, or
+cargo compiles the lib and the bin a second time as test targets and hits the
+lang-item collision anyway. `-C panic=abort` is in `.cargo/config.toml` rather
+than only in the profiles, because cargo ignores `panic` for the test profile
+and goish cannot unwind. And a new test has to be added to the list in `main`,
+or it silently never runs.
 
 Run the shared SDK contract suite:
 
