@@ -3,9 +3,16 @@
 //! The tables here are what `#[dagger::object]` emits. They are `const`, so the
 //! names and kinds are `&'static str` — that is core, not std, and costs no
 //! allocation. Everything that carries a *value* at runtime is a goish type.
+//!
+//! [`serve`] is the entry point a module's `main` calls: it answers the
+//! engine's pending call, either by describing what this module serves
+//! ([`register`]) or by running one of its functions ([`dispatch`]).
 
 use goish::encoding::json;
-use goish::{nil, string};
+use goish::{nil, os, string};
+
+use crate::engine::{field, field_string, Session};
+use crate::{fail, json_string};
 
 /// One argument of an exported function.
 pub struct ArgDef {
@@ -238,4 +245,254 @@ pub fn encode_void() -> string {
 /// one is returning the ID string the engine already holds.
 pub fn encode_object<T: crate::ObjectId>(value: &T) -> string {
     crate::json_string(&value.id())
+}
+
+/// Serve this module: answer the engine's pending function call.
+///
+/// `T` is the module's root object, declared with `#[dagger::object]`. The macro
+/// emits the [`Object`] impl this walks — the function table for registration,
+/// and the dispatch for an invocation.
+pub fn serve<T: Object>() -> ! {
+    let session = match Session::from_env() {
+        Some(s) => s,
+        None => fail(string(
+            "no engine session in the environment; a module binary is started by the engine, not run directly",
+        )),
+    };
+
+    let call = match session.query(&string(
+        "{currentFunctionCall{name,parentName,inputArgs{name,value}}}",
+    )) {
+        Ok(data) => data,
+        Err(message) => fail(message),
+    };
+
+    let parent_name = match field_string(&call, &["currentFunctionCall", "parentName"]) {
+        Ok(name) => name,
+        Err(message) => fail(message),
+    };
+
+    // An empty parentName is the engine asking what this module serves; anything
+    // else is a call against that object.
+    let result = if parent_name.Len() == 0 {
+        register::<T>(&session)
+    } else {
+        dispatch::<T>(&session, &call)
+    };
+
+    match result.and_then(|value| return_value(&session, &value)) {
+        Ok(()) => os::Exit(0),
+        Err(message) => fail(message),
+    }
+}
+
+/// Describe the module to the engine and return the description's ID.
+///
+/// Build a `TypeDef` for the root object, hang every declared function off it,
+/// attach it to a `Module`, and hand back the module's ID.
+fn register<T: Object>(session: &Session) -> Result<string, string> {
+    let mut object = string("{typeDef{withObject(name:") + json_string(&string(T::NAME)) + "){";
+    let mut closers = string("");
+
+    for def in T::functions() {
+        let function_id = build_function(session, def)?;
+        object = object + "withFunction(function:" + json_string(&function_id) + "){";
+        closers = closers + "}";
+    }
+
+    let query = object + "id}" + closers + "}}";
+    let type_def = session.query(&query)?;
+    let type_def_id = nested_id(&type_def, "typeDef", "withObject", T::functions().len())?;
+
+    let module = session
+        .query(&(string("{module{withObject(object:") + json_string(&type_def_id) + "){id}}}"))?;
+    let module_id = field_string(&module, &["module", "withObject", "id"])?;
+
+    // Both paths hand back "a JSON document", so the ID is JSON-encoded here to
+    // match what dispatch returns from encode_*. returnValue then embeds it as a
+    // GraphQL string exactly once.
+    Ok(json_string(&module_id))
+}
+
+/// Build one `Function` and return its ID.
+fn build_function(session: &Session, def: &FunctionDef) -> Result<string, string> {
+    let return_type = build_type_def(session, def.return_kind, def.return_object, false)?;
+
+    let mut query = string("{function(name:")
+        + json_string(&string(def.name))
+        + ",returnType:"
+        + json_string(&return_type)
+        + "){";
+    let mut depth: usize = 0;
+
+    // What makes `dagger generate` run this function. It takes no arguments:
+    // the engine reads the flag off the function, then enforces the rest of the
+    // contract — a `Changeset` return, and no required arguments — when the
+    // module loads.
+    if def.generator {
+        query = query + "withGenerator{";
+        depth += 1;
+    }
+
+    if !def.doc.is_empty() {
+        query = query + "withDescription(description:" + json_string(&string(def.doc)) + "){";
+        depth += 1;
+    }
+
+    // Flags the function for `dagger check`. It takes no arguments — the whole
+    // effect is the flag.
+    if def.is_check {
+        query = query + "withCheck{";
+        depth += 1;
+    }
+
+    for arg in def.args {
+        let arg_type = build_type_def(session, arg.kind, arg.object, arg.optional)?;
+        query = query
+            + "withArg(name:"
+            + json_string(&string(arg.name))
+            + ",typeDef:"
+            + json_string(&arg_type);
+        if !arg.doc.is_empty() {
+            query = query + ",description:" + json_string(&string(arg.doc));
+        }
+        if !arg.default_value.is_empty() {
+            // defaultValue is a JSON scalar, so the already-encoded JSON is
+            // embedded as a GraphQL string.
+            query = query + ",defaultValue:" + json_string(&string(arg.default_value));
+        }
+        if !arg.default_path.is_empty() {
+            query = query + ",defaultPath:" + json_string(&string(arg.default_path));
+        }
+        if !arg.ignore.is_empty() {
+            query = query + ",ignore:[";
+            let mut first = true;
+            for pattern in arg.ignore {
+                if !first {
+                    query = query + ",";
+                }
+                query = query + json_string(&string(*pattern));
+                first = false;
+            }
+            query = query + "]";
+        }
+        if !arg.deprecated.is_empty() {
+            query = query + ",deprecated:" + json_string(&string(arg.deprecated));
+        }
+        query = query + "){";
+        depth += 1;
+    }
+
+    let mut closers = string("");
+    for _ in 0..depth {
+        closers = closers + "}";
+    }
+    let data = session.query(&(query + "id}" + closers + "}"))?;
+    nested_id(&data, "function", "", depth)
+}
+
+/// Build a `TypeDef` of one kind and return its ID.
+///
+/// `object` names the engine object for `OBJECT_KIND` and is empty otherwise;
+/// an object is described by name rather than by kind, since the kind alone
+/// would not say which object it is.
+fn build_type_def(
+    session: &Session,
+    kind: &'static str,
+    object: &'static str,
+    optional: bool,
+) -> Result<string, string> {
+    // `kind` is a GraphQL enum literal, so it is spliced unquoted. It only ever
+    // comes from the macro's fixed set, never from user text. An object's name
+    // is a string argument, so it goes through the usual quoting.
+    let (builder, head) = if object.is_empty() {
+        (string("withKind(kind:") + kind + ")", "withKind")
+    } else {
+        (
+            string("withObject(name:") + json_string(&string(object)) + ")",
+            "withObject",
+        )
+    };
+
+    let query = if optional {
+        string("{typeDef{") + builder + "{withOptional(optional:true){id}}}}"
+    } else {
+        string("{typeDef{") + builder + "{id}}}"
+    };
+    let data = session.query(&query)?;
+    if optional {
+        field_string(&data, &["typeDef", head, "withOptional", "id"])
+    } else {
+        field_string(&data, &["typeDef", head, "id"])
+    }
+}
+
+/// Walk `depth` repetitions of a chained field down to the `id` it wraps.
+///
+/// Chained builder calls nest in the response exactly as they do in the query,
+/// so `withFunction(...){withFunction(...){id}}` comes back doubly wrapped.
+fn nested_id(
+    data: &json::Value,
+    root: &'static str,
+    repeated: &'static str,
+    depth: usize,
+) -> Result<string, string> {
+    let mut current = if root.is_empty() {
+        data.clone()
+    } else {
+        field(data, &[root])?
+    };
+    if !repeated.is_empty() {
+        current = field(&current, &[repeated])?;
+    }
+    for _ in 0..depth {
+        current = match current.AsObject() {
+            Some(object) => {
+                let mut found = json::Value::Null;
+                // Each level has exactly one field, whatever it was named.
+                let keys = object.Keys();
+                for i in 0..keys.Len() {
+                    let (value, ok) = object.Get(keys[i as usize].clone());
+                    if ok {
+                        found = value;
+                    }
+                }
+                found
+            }
+            None => return Err(string("unexpected shape in the engine response")),
+        };
+    }
+    match current.AsObject() {
+        Some(object) => {
+            let (id, ok) = object.Get("id");
+            if !ok {
+                return Err(string("engine response is missing id"));
+            }
+            match id.AsString() {
+                Some(s) => Ok(s.clone()),
+                None => Err(string("id was not a string")),
+            }
+        }
+        None => match current.AsString() {
+            Some(s) => Ok(s.clone()),
+            None => Err(string("engine response is missing id")),
+        },
+    }
+}
+
+/// Call the requested function and return its JSON-encoded result.
+fn dispatch<T: Object>(session: &Session, call: &json::Value) -> Result<string, string> {
+    let _ = session;
+    let name = field_string(call, &["currentFunctionCall", "name"])?;
+    let input_args = field(call, &["currentFunctionCall", "inputArgs"])?;
+    let args = Arguments::new(input_args);
+    T::invoke(&name, &args)
+}
+
+/// Hand a JSON-encoded result back to the engine.
+fn return_value(session: &Session, value: &string) -> Result<(), string> {
+    session.query(
+        &(string("{currentFunctionCall{returnValue(value:") + json_string(value) + ")}}"),
+    )?;
+    Ok(())
 }
