@@ -41,6 +41,15 @@ let buildHostKey: String! {
   }
 }
 
+# Base for containers that *run* a goish binary, as opposed to building one.
+# goish links statically with no libc and no dynamic loader, so in principle the
+# binary needs nothing around it — but an entirely empty rootfs is not enough in
+# practice: running codegen from a scratch container makes the nested CLI in the
+# sdk-sdk contract suite die during package init. A minimal image costs ~30MB
+# and avoids the problem, and is still far smaller than the ~1.5GB `rust` image
+# these containers used to be served from. Kept in step across the two files.
+let runtimeImage = "debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241"
+
 # Where the built codegen binary lands in the container that runs it.
 let codegenPath = "/usr/local/bin/codegen"
 let cargoTargetDir = "/codegen-target"
@@ -215,6 +224,7 @@ type Mod {
   """
   let codegenRunner: Container! {
     container(platform: servePlatform)
+      .from(runtimeImage)
       .withFile(codegenPath, codegenBuilder.file(codegenPath), permissions: 493)
   }
 }

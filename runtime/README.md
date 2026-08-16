@@ -22,9 +22,12 @@ how to build and start a Rust module. That is the whole job:
   a fresh `linux/amd64` container and sets it as the entrypoint.
 
 Because a goish binary is statically linked with no libc and no dynamic loader,
-the entrypoint is a single self-contained file — so the served image is built
-from a bare `container(platform: servePlatform)` holding nothing else. That also
-spares an arm64 engine from pulling the amd64 `rust` image at all.
+the entrypoint is a single self-contained file, so the served image is a
+digest-pinned `debian:bookworm-slim` with just that binary added rather than the
+~1.5GB `rust` image it used to be. `scratch` would be the natural end point and
+does work for the module binary, but it is deliberately not used: serving
+codegen from an empty rootfs makes the nested CLI in the sdk-sdk contract suite
+die during package init, so both run-containers use the same minimal base.
 
 ## Invariants worth knowing
 

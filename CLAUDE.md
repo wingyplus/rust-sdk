@@ -76,11 +76,17 @@ module commits that file and `sdk/codegen` has its own; they must keep working
 byte-for-byte unchanged, which is what keeps this change clear of the
 `rustCrateName`/`toRustCrateName` invariant entirely.
 
-The finished binary is then served from a bare `container(platform:
-servePlatform)` with nothing in it but the binary — goish links statically with
-no libc and no dynamic loader, so nothing else is needed. Serving on amd64 is
-still mandatory: an x86_64 binary cannot be `exec`'d as the entrypoint of an
-arm64 container. Only that one small binary runs emulated; the compile does not.
+The finished binary is then served from `runtimeImage`, a digest-pinned
+`debian:bookworm-slim` — not the toolchain that built it, and not `scratch`.
+goish links statically with no libc and no dynamic loader, so in principle the
+binary needs nothing around it, but an entirely empty rootfs is *not* enough in
+practice: running codegen from a scratch container makes the nested CLI in the
+sdk-sdk contract suite die during package init (`bluemonday/css.init()` →
+`growslice: len out of range`). ~30MB buys that away, and is still far smaller
+than the ~1.5GB `rust` image these containers used to be served from. Serving on
+amd64 is mandatory regardless: an x86_64 binary cannot be `exec`'d as the
+entrypoint of an arm64 container. Only that one small binary runs emulated; the
+compile does not.
 
 Cache volumes holding compiled objects (`rust-sdk-module-target-*`,
 `rust-sdk-codegen-target-*`) are suffixed with `buildHostKey` because cargo puts
