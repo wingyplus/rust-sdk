@@ -127,10 +127,14 @@ type RustSdkRuntime {
 Convert a Dagger module name into a Rust crate name ("my-module" ->
 "my_module").
 
-Kept byte-for-byte in step with rustCrateName in
-helpers/render-template/main.go, which derives the same name at init time: that
-one names the `[package]` cargo builds, this one names the binary cargo emits.
-A divergence means the entrypoint points at a path that does not exist.
+Kept byte-for-byte in step with rust_crate_name in
+helpers/render-template/src/lib.rs, which derives the same name at init time:
+that one names the `[package]` cargo builds, this one names the binary cargo
+emits. A divergence means the entrypoint points at a path that does not exist.
+
+The helper cannot spell this as three replacements — goish's regexp does no
+`${1}` expansion — so it scans instead, and TestDangCrateNameMatchesRust
+replays the calls below to hold the two together.
 """
 let toRustCrateName(name: String!): String! {
   name

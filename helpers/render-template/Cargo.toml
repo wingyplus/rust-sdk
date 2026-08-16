@@ -1,0 +1,41 @@
+[package]
+name = "render-template"
+version = "0.1.0"
+edition = "2021"
+# goish's floor.
+rust-version = "1.86"
+publish = false
+description = "Renders a Rust SDK init template for a Dagger module name."
+
+[lib]
+name = "render_template"
+path = "src/lib.rs"
+
+[[bin]]
+name = "render-template"
+path = "src/main.rs"
+
+# The test suite is a second binary rather than `cargo test`: libtest's harness
+# is `std`, and this crate links with -nostartfiles against goish's runtime, so
+# a test target cannot be built for it. goish supplies `testing::Main` for
+# exactly this — see src/test_main.rs, and README.md for how to run it.
+[[bin]]
+name = "render-template-test"
+path = "src/test_main.rs"
+
+[dependencies]
+# The only dependency, and the same one the SDK crate and every module use.
+# Pinned by git rev: goish is not published to crates.io. Keep this rev in step
+# with ../../sdk/Cargo.toml, ../../sdk/codegen/Cargo.toml and
+# ../../templates/*/Cargo.toml.tmpl.
+goish = { git = "https://github.com/cogentica-ai/goish", rev = "ff061453ffd2533bb22ea68c8ccb176616aa4b5e" }
+
+# goish supplies its own runtime and never unwinds.
+[profile.release]
+panic = "abort"
+lto = true
+strip = true
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"

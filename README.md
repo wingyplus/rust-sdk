@@ -30,7 +30,7 @@ Backed by [`github.com/dagger/polyfill`](https://github.com/dagger/polyfill).
 | `runtime/` | The module runtime new Rust modules reference. Build-only; see [its README](./runtime/README.md) |
 | `sdk/` | The Rust client library (`dagger-sdk`) and its bindings generator |
 | `templates/` | Starter templates for `dagger module init rust` |
-| `helpers/render-template/` | Go helper that renders a template for a given module name |
+| `helpers/render-template/` | Helper that renders a template for a given module name |
 
 ## Install
 
@@ -299,18 +299,19 @@ written against a future built-in runtime keeps working.
 
 Two invariants hold the pieces together, and both are load-bearing:
 
-- **goish is pinned by git rev**, in `sdk/Cargo.toml`, `sdk/codegen/Cargo.toml`
-  and every `templates/*/Cargo.toml.tmpl`. It is not on crates.io. The pins that
-  meet in one build — the SDK crate's and the module's — must name the same rev,
-  since cargo treats two revs as two different crates and linking a module
-  against two copies of the goish runtime fails on duplicate symbols. Bump all
-  of them together.
-- **The binary's name is derived, not configured.** `rustCrateName` in
-  `helpers/render-template/main.go` writes the cargo `[package]` name at init
+- **goish is pinned by git rev**, in `sdk/Cargo.toml`, `sdk/codegen/Cargo.toml`,
+  `helpers/render-template/Cargo.toml` and every `templates/*/Cargo.toml.tmpl`.
+  It is not on crates.io. The pins that meet in one build — the SDK crate's and
+  the module's — must name the same rev, since cargo treats two revs as two
+  different crates and linking a module against two copies of the goish runtime
+  fails on duplicate symbols. Bump all of them together.
+- **The binary's name is derived, not configured.** `rust_crate_name` in
+  `helpers/render-template/src/lib.rs` writes the cargo `[package]` name at init
   time; `toRustCrateName` in `runtime/main.dang` recomputes it at call time to
   find the binary. They must stay byte-for-byte identical — a divergence builds
   fine and then fails to start. `TestNameConversionsMatchDang` guards the cases
-  a general-purpose case library gets wrong.
+  a general-purpose case library gets wrong, and `TestDangCrateNameMatchesRust`
+  replays the dang recipe against the helper so neither side can drift alone.
 
 Each module also carries a `.cargo/config.toml`. It is not boilerplate: it names
 the target tuple explicitly (so goish's bare-metal link flags stay off
@@ -374,8 +375,12 @@ dagger -m github.com/dagger/sdk-sdk -W . check
 Test the template helper directly:
 
 ```sh
-cd helpers/render-template && go test ./...
+cd helpers/render-template && cargo run --bin render-template-test
 ```
+
+The helper is `no_std` on goish like the rest of the repository, so its tests
+are a binary built on goish's `testing` package rather than a `cargo test`
+target — libtest's harness is `std`.
 
 ## Licence
 

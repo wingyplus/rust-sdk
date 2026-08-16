@@ -1,0 +1,23 @@
+# Build with an explicit target tuple so proc-macros (host crates) are built
+# without the bare-metal link flags below. Without this, the rustflags leak into
+# proc-macro crates and break PIC.
+#
+# rust-sdk.dang names this same tuple when it locates the built binary; if you
+# change it here, change it there too.
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+# Strip Rust's default startup files and the default C library. goish provides
+# _start itself (see #[goish::main]) and never calls into libc. These flags only
+# apply to artifacts for the named target — host tools are unaffected.
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C", "link-arg=-nostartfiles",
+    "-C", "link-arg=-nodefaultlibs",
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-Wl,--no-dynamic-linker",
+    "-C", "relocation-model=static",
+    # Force-emit frame pointers so goish's SIGSEGV handler can walk the RBP
+    # chain to produce a backtrace.
+    "-C", "force-frame-pointers=yes",
+]
