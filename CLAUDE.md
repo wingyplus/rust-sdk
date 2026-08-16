@@ -76,17 +76,29 @@ module commits that file and `sdk/codegen` has its own; they must keep working
 byte-for-byte unchanged, which is what keeps this change clear of the
 `rustCrateName`/`toRustCrateName` invariant entirely.
 
-The finished binary is then served from `runtimeImage`, a digest-pinned
-`debian:bookworm-slim` — not the toolchain that built it, and not `scratch`.
-goish links statically with no libc and no dynamic loader, so in principle the
-binary needs nothing around it, but an entirely empty rootfs is *not* enough in
-practice: running codegen from a scratch container makes the nested CLI in the
-sdk-sdk contract suite die during package init (`bluemonday/css.init()` →
-`growslice: len out of range`). ~30MB buys that away, and is still far smaller
-than the ~1.5GB `rust` image these containers used to be served from. Serving on
-amd64 is mandatory regardless: an x86_64 binary cannot be `exec`'d as the
-entrypoint of an arm64 container. Only that one small binary runs emulated; the
+The finished binary is then served from a *fresh* container based on `runImage`
+(a digest-pinned `alpine`) — no cargo caches, no source, no target directory,
+just the binary. Because the binary is statically linked with no libc, the base
+supplies nothing it needs and musl vs glibc does not matter; it is picked purely
+to be small. Serving on amd64 is mandatory: an x86_64 binary cannot be `exec`'d
+as the entrypoint of an arm64 container. Only that one binary runs emulated; the
 compile does not.
+
+**`scratch` is the one base that does not work**, which is worth knowing before
+anyone tries the obvious optimisation. An empty rootfs fails two sdk-sdk
+contract checks, 6 runs out of 6, where any real base passes:
+
+| check | symptom on `scratch` |
+| --- | --- |
+| `generation:exposes-generator` | nested CLI dies in package init (`bluemonday/css.init()` → `growslice: len out of range`) |
+| `contract:honors-custom-path` | `initModule` reports no added paths |
+
+Neither failure appears in a scaffolded module's own init/generate/build/call
+path, which passes on `scratch` — so those two checks, not a manual smoke test,
+are what to re-run against any change of base. Note also that this suite is
+noticeably flaky under emulation: single-check runs repeated a few times are far
+more trustworthy than one whole-suite run, and a result seen twice is not yet
+evidence of determinism.
 
 Cache volumes holding compiled objects (`rust-sdk-module-target-*`,
 `rust-sdk-codegen-target-*`) are suffixed with `buildHostKey` because cargo puts

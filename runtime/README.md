@@ -22,12 +22,12 @@ how to build and start a Rust module. That is the whole job:
   a fresh `linux/amd64` container and sets it as the entrypoint.
 
 Because a goish binary is statically linked with no libc and no dynamic loader,
-the entrypoint is a single self-contained file, so the served image is a
-digest-pinned `debian:bookworm-slim` with just that binary added rather than the
-~1.5GB `rust` image it used to be. `scratch` would be the natural end point and
-does work for the module binary, but it is deliberately not used: serving
-codegen from an empty rootfs makes the nested CLI in the sdk-sdk contract suite
-die during package init, so both run-containers use the same minimal base.
+the entrypoint is a single self-contained file, and the container serving it is
+a fresh one carrying nothing but that binary — no cargo caches, no source, no
+target directory — on a small `alpine` base. `scratch` would be the natural end
+point and the module binary does run there, but it breaks two sdk-sdk contract
+checks; see the table in the root [CLAUDE.md](../CLAUDE.md) before changing the
+base.
 
 ## Invariants worth knowing
 

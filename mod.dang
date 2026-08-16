@@ -41,14 +41,22 @@ let buildHostKey: String! {
   }
 }
 
-# Base for containers that *run* a goish binary, as opposed to building one.
-# goish links statically with no libc and no dynamic loader, so in principle the
-# binary needs nothing around it — but an entirely empty rootfs is not enough in
-# practice: running codegen from a scratch container makes the nested CLI in the
-# sdk-sdk contract suite die during package init. A minimal image costs ~30MB
-# and avoids the problem, and is still far smaller than the ~1.5GB `rust` image
-# these containers used to be served from. Kept in step across the two files.
-let runtimeImage = "debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241"
+# Base for the containers that *run* a goish binary rather than build one. A
+# goish binary is statically linked with no libc and no dynamic loader, so the
+# base supplies nothing it needs — musl vs glibc is irrelevant here — and the
+# image is chosen purely to be small.
+#
+# `scratch` does not work, though, and that is worth knowing before anyone tries
+# it: an entirely empty rootfs fails both sdk-sdk contract checks below, 6 runs
+# out of 6, while any real base passes them.
+#
+#   sdk-sdk:generation:exposes-generator     nested CLI dies in package init
+#   sdk-sdk:contract:honors-custom-path      initModule reports no added paths
+#
+# Neither failure shows up in a scaffolded module's own init/generate/build/call
+# path, which passes on `scratch` — so those two checks are the test to re-run
+# against any change of base. Kept in step across the two files.
+let runImage = "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 
 # Where the built codegen binary lands in the container that runs it.
 let codegenPath = "/usr/local/bin/codegen"
@@ -218,13 +226,13 @@ type Mod {
   The codegen binary in a container that can actually execute it.
 
   codegen is a goish binary, so it is x86_64 whatever built it and has to run on
-  servePlatform. It is statically linked with no libc and no dynamic loader, so
-  nothing else needs to be in the image — which also spares an arm64 engine from
-  pulling the amd64 `rust` image just to run it.
+  servePlatform — which is a different container from the one that built it now
+  that the build follows the engine. It is served from runImage, a small base
+  chosen for size; see that constant for why it is not `scratch`.
   """
   let codegenRunner: Container! {
     container(platform: servePlatform)
-      .from(runtimeImage)
+      .from(runImage)
       .withFile(codegenPath, codegenBuilder.file(codegenPath), permissions: 493)
   }
 }
