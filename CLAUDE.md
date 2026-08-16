@@ -37,11 +37,75 @@ Practical consequences when writing code here:
   `$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release/<name>`, **not**
   `release/<name>`. `mod.dang` and `runtime/main.dang` both depend on this path.
 - `panic = "abort"` in both profiles. goish never unwinds.
+- goish is Linux x86_64 only — its runtime is x86_64 inline asm — so
+  `cargo target` is always `x86_64-unknown-linux-gnu` and any container that
+  *runs* a goish binary is created with `container(platform: servePlatform)`,
+  i.e. `linux/amd64`. Building is the opposite: build containers follow the
+  engine's own platform and cross-link, so rustc runs natively rather than
+  under emulation. See "Building is cross, running is amd64" below.
 
 There is no exception left: `helpers/render-template/`, which renders init
 templates, was a Go program and is now a goish binary too. It runs at init time
 in the toolchain image and has nothing to do with the module runtime, but it is
 built and tested like every other crate here.
+
+## Building is cross, running is amd64
+
+Two different questions, and conflating them is the mistake to avoid:
+
+- **What tuple is the binary?** Always `x86_64-unknown-linux-gnu`. goish has no
+  aarch64 port — it has zero `cfg(target_arch)` gates and ~24 raw x86_64 `asm!`
+  blocks, and compiling it for aarch64 dies with 41 errors of the form
+  ``the `att_syntax` option is only supported on x86``. This is not negotiable
+  until goish itself gains a port, which is upstream work in
+  `cogentica-ai/goish`, not something this repo can do.
+- **What platform does the build run on?** The engine's own. `container()` with
+  no `platform:` argument in `mod.dang` and `runtime/main.dang` follows the
+  engine, and cross-compiles to the tuple above.
+
+rustc cross-compiles happily once `rustup target add x86_64-unknown-linux-gnu`
+has run — the arm64 `rust` image *does* have an x86_64 `core`, contrary to what
+an earlier revision of these docs claimed. The single thing that breaks is the
+link step: rustc shells out to `cc` with `-m64`, and the stock arm64 driver
+answers `unrecognized command-line option '-m64'`. `crossToolchainSetup`
+installs `gcc-x86-64-linux-gnu` when `uname -m` is not `x86_64`, and
+`crossLinkerEnv` points cargo at `x86_64-linux-gnu-gcc` — a name Debian uses for
+the *native* driver on an amd64 host, so one value is correct on both.
+
+That override is set **by environment, never in `.cargo/config.toml`**. Every
+module commits that file and `sdk/codegen` has its own; they must keep working
+byte-for-byte unchanged, which is what keeps this change clear of the
+`rustCrateName`/`toRustCrateName` invariant entirely.
+
+The finished binary is then served from a *fresh* container based on `runImage`
+(a digest-pinned `alpine`) — no cargo caches, no source, no target directory,
+just the binary. Because the binary is statically linked with no libc, the base
+supplies nothing it needs and musl vs glibc does not matter; it is picked purely
+to be small. Serving on amd64 is mandatory: an x86_64 binary cannot be `exec`'d
+as the entrypoint of an arm64 container. Only that one binary runs emulated; the
+compile does not.
+
+**`scratch` is the one base that does not work**, which is worth knowing before
+anyone tries the obvious optimisation. An empty rootfs fails two sdk-sdk
+contract checks, 6 runs out of 6, where any real base passes:
+
+| check | symptom on `scratch` |
+| --- | --- |
+| `generation:exposes-generator` | nested CLI dies in package init (`bluemonday/css.init()` → `growslice: len out of range`) |
+| `contract:honors-custom-path` | `initModule` reports no added paths |
+
+Neither failure appears in a scaffolded module's own init/generate/build/call
+path, which passes on `scratch` — so those two checks, not a manual smoke test,
+are what to re-run against any change of base. Note also that this suite is
+noticeably flaky under emulation: single-check runs repeated a few times are far
+more trustworthy than one whole-suite run, and a result seen twice is not yet
+evidence of determinism.
+
+Cache volumes holding compiled objects (`rust-sdk-module-target-*`,
+`rust-sdk-codegen-target-*`) are suffixed with `buildHostKey` because cargo puts
+host build scripts and proc-macro `.so`s under `$CARGO_TARGET_DIR/release/`,
+which an engine of the other architecture cannot exec. The registry and git
+caches hold source, not objects, and stay shared.
 
 ## Invariants that will bite you
 

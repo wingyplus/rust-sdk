@@ -19,6 +19,59 @@ let rustImage = "rust:1.90-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30
 # built for the host without the bare-metal link flags.
 let cargoTarget = "x86_64-unknown-linux-gnu"
 
+# The platform the finished module binary is served on. goish only targets
+# x86_64, so this is always linux/amd64 no matter what the engine runs: an
+# x86_64 binary cannot be exec'd as the entrypoint of an arm64 container. The
+# *build* is a different question — see crossToolchainSetup, which lets it
+# follow the engine. Kept in step with the same constant in ../mod.dang.
+let servePlatform: Platform! = "linux/amd64"
+
+# Cargo's per-target linker override for cargoTarget, set by environment rather
+# than in .cargo/config.toml on purpose: every module commits that file, and it
+# must keep working byte-for-byte unchanged. Debian calls the native driver
+# x86_64-linux-gnu-gcc on an amd64 host and installs the cross driver under the
+# same name elsewhere, so one value covers both cases.
+let crossLinkerEnv = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"
+let crossLinker = "x86_64-linux-gnu-gcc"
+
+# Install the x86_64 cross driver unless the build host is already x86_64.
+# rustc needs no help cross-compiling once `rustup target add` has run — the
+# goish sources compile clean for x86_64 on an arm64 host. Only the link step
+# breaks: rustc shells out to `cc` with -m64, and the stock arm64 driver rejects
+# it ("unrecognized command-line option '-m64'").
+let crossToolchainSetup = "test \"$(uname -m)\" = x86_64 || { apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc-x86-64-linux-gnu; }"
+
+# Base for the containers that *run* a goish binary rather than build one. A
+# goish binary is statically linked with no libc and no dynamic loader, so the
+# base supplies nothing it needs — musl vs glibc is irrelevant here — and the
+# image is chosen purely to be small.
+#
+# `scratch` does not work, though, and that is worth knowing before anyone tries
+# it: an entirely empty rootfs fails both sdk-sdk contract checks below, 6 runs
+# out of 6, while any real base passes them.
+#
+#   sdk-sdk:generation:exposes-generator     nested CLI dies in package init
+#   sdk-sdk:contract:honors-custom-path      initModule reports no added paths
+#
+# Neither failure shows up in a scaffolded module's own init/generate/build/call
+# path, which passes on `scratch` — so those two checks are the test to re-run
+# against any change of base. Kept in step across the two files.
+let runImage = "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+
+# Cache volumes holding compiled objects are keyed by build host. Cargo puts
+# target artifacts under $CARGO_TARGET_DIR/<target>/ but host artifacts — build
+# scripts and proc-macro .so files — directly under $CARGO_TARGET_DIR/release/.
+# Those are architecture-specific, so an amd64 and an arm64 engine must not
+# share one volume. The registry and git caches hold source, not objects, and
+# stay shared.
+let buildHostKey: String! {
+  if (defaultPlatform == "linux/amd64") {
+    "linux-amd64"
+  } else {
+    if (defaultPlatform == "linux/arm64") { "linux-arm64" } else { "other" }
+  }
+}
+
 """
 Runtime module for the Rust SDK.
 
@@ -71,7 +124,11 @@ type RustSdkRuntime {
       .join(Path(toRustCrateName(modName)))
       .string
 
-    baseContainer(container)
+    # The build container follows the engine's own platform, so rustc runs
+    # natively and cross-links to cargoTarget. On an arm64 engine that replaces
+    # a fully emulated cargo build with a native one; only the finished binary
+    # is left to run under emulation.
+    let builder = baseContainer(container())
       .withMountedDirectory(modSourceDirPath, contextDir)
       .withWorkdir(workdir)
       .withEnvVariable("CARGO_TARGET_DIR", cargoTargetDir)
@@ -81,9 +138,14 @@ type RustSdkRuntime {
       .withExec(["sh", "-c", missingSdkGuard(subPath)])
       .withExec(["cargo", "build", "--release"])
       .withExec(["cp", binPath, entrypointPath])
-      .withoutMount(cargoTargetDir)
-      .withoutMount(cargoRegistryDir)
-      .withoutMount(cargoGitDir)
+
+    # Serve on servePlatform, because the binary is x86_64 whatever built it.
+    # This is a fresh container rather than the build one: it carries no cargo
+    # caches, no source and no target directory, just the binary. The base is
+    # runImage, a small base; see that constant for why it is not `scratch`.
+    container(platform: servePlatform)
+      .from(runImage)
+      .withFile(entrypointPath, builder.file(entrypointPath), permissions: 493)
       .withEntrypoint([entrypointPath])
   }
 
@@ -117,9 +179,11 @@ type RustSdkRuntime {
       .from(rustImage)
       .withoutEntrypoint
       .withExec(["rustup", "target", "add", cargoTarget])
+      .withExec(["sh", "-c", crossToolchainSetup])
+      .withEnvVariable(crossLinkerEnv, crossLinker)
       .withMountedCache(cargoRegistryDir, cacheVolume("rust-sdk-cargo-registry"))
       .withMountedCache(cargoGitDir, cacheVolume("rust-sdk-cargo-git"))
-      .withMountedCache(cargoTargetDir, cacheVolume("rust-sdk-module-target"))
+      .withMountedCache(cargoTargetDir, cacheVolume("rust-sdk-module-target-" + buildHostKey))
   }
 }
 
