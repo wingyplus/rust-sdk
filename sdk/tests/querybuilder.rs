@@ -139,6 +139,45 @@ impl EnvVariableFields {
     }
 }
 
+/// Not a Dagger object: the four shapes GraphQL can spell for a list with a
+/// scalar element type.
+///
+/// The schema has only the first today — all 19 of its scalar lists are
+/// `[Scalar!]!` — so the other three are insurance rather than current
+/// coverage. They are worth pinning anyway: none of them is written anywhere
+/// in the crate, they exist purely as compositions of the blanket
+/// `FromJson for slice<T>` and `FromJson for Option<T>` impls, so a change to
+/// either could break them while `entrypoint` above keeps passing.
+struct ListShapeFields;
+
+impl Fields for ListShapeFields {
+    fn new() -> Self {
+        ListShapeFields
+    }
+}
+
+impl ListShapeFields {
+    /// `[String!]!`
+    fn required(&self) -> Leaf<slice<string>> {
+        Leaf::new("required")
+    }
+
+    /// `[String!]`
+    fn nullable_list(&self) -> Leaf<Option<slice<string>>> {
+        Leaf::new("nullableList")
+    }
+
+    /// `[String]!`
+    fn nullable_items(&self) -> Leaf<slice<Option<string>>> {
+        Leaf::new("nullableItems")
+    }
+
+    /// `[String]`
+    fn both_nullable(&self) -> Leaf<Option<slice<Option<string>>>> {
+        Leaf::new("bothNullable")
+    }
+}
+
 // ─── render ───────────────────────────────────────────────────────────
 
 /// The motivating example from the plan, rendered end to end through a chain.
@@ -393,6 +432,121 @@ fn TestChainExtensionDoesNotMutateTheReceiver(t: &mut testing::T) {
     );
 }
 
+/// All four list nullability shapes, off one fixture.
+///
+/// A nullable *list* is `None`; a nullable *element* is a `None` inside the
+/// list. Confusing the two is the mistake this catches — the middle two rows
+/// decode from JSON that is a list either way.
+fn TestScalarListNullabilityShapes(t: &mut testing::T) {
+    let l = ListShapeFields::new();
+    let selection = (
+        l.required(),
+        l.nullable_list(),
+        l.nullable_items(),
+        l.both_nullable(),
+    );
+
+    // A scalar list renders like any other leaf: no braces, because there is
+    // no sub-selection to make.
+    let mut got = string("");
+    let mut n: usize = 0;
+    selection.render(&mut got, &mut n);
+    assert_string(
+        t,
+        "render",
+        got,
+        "f0:required f1:nullableList f2:nullableItems f3:bothNullable",
+    );
+
+    let response = parse(
+        t,
+        "{\"f0\":[\"a\",\"b\"],\"f1\":null,\"f2\":[\"x\",null],\"f3\":[null]}",
+    );
+    let mut n: usize = 0;
+    let (required, nullable_list, nullable_items, both_nullable) =
+        match selection.decode(&response, &mut n) {
+            Ok(decoded) => decoded,
+            Err(why) => t.Fatal(fmt::Sprintf!("decode: %s", why)),
+        };
+
+    // [String!]! — a plain list.
+    if required.Len() != 2 {
+        t.Fatal(fmt::Sprintf!("required has %d elements, want 2", required.Len()));
+    }
+    assert_string(t, "required[0]", required[0].clone(), "a");
+    assert_string(t, "required[1]", required[1].clone(), "b");
+
+    // [String!] — the list itself is absent.
+    if nullable_list.is_some() {
+        t.Error("a null list decoded to Some");
+    }
+
+    // [String]! — the list is there; one element is not.
+    if nullable_items.Len() != 2 {
+        t.Fatal(fmt::Sprintf!(
+            "nullableItems has %d elements, want 2",
+            nullable_items.Len()
+        ));
+    }
+    match nullable_items[0].clone() {
+        Some(value) => assert_string(t, "nullableItems[0]", value, "x"),
+        None => t.Error("nullableItems[0] decoded to None, want Some"),
+    }
+    if nullable_items[1].is_some() {
+        t.Error("a null element decoded to Some");
+    }
+
+    // [String] — present, holding one absent element. A `Some` wrapping a list
+    // of `None`, which is the shape most easily collapsed by mistake.
+    match both_nullable {
+        Some(items) => {
+            if items.Len() != 1 {
+                t.Fatal(fmt::Sprintf!(
+                    "bothNullable has %d elements, want 1",
+                    items.Len()
+                ));
+            }
+            if items[0].is_some() {
+                t.Error("bothNullable[0] decoded to Some, want None");
+            }
+        }
+        None => t.Error("bothNullable decoded to None, want Some"),
+    }
+}
+
+/// A bad element says *which* element. The field name alone does not, and a
+/// list is the one place that matters.
+fn TestListElementErrorsNameTheIndex(t: &mut testing::T) {
+    // A scalar list: the index comes from `FromJson for slice<T>`, under the
+    // field name the enclosing Leaf supplies.
+    let c = ContainerFields::new();
+    let response = parse(t, "{\"f0\":[\"/bin/sh\",7]}");
+    let mut n: usize = 0;
+    match c.entrypoint().decode(&response, &mut n) {
+        Ok(_) => t.Error("decoding a number into a string list succeeded"),
+        Err(why) => {
+            assert_contains(t, "scalar list", why.clone(), "entrypoint");
+            assert_contains(t, "scalar list", why, "[1]");
+        }
+    }
+
+    // An object list: the index comes from `SubList`, and the failing inner
+    // field is named after it.
+    let selection = c.env_variables().select(|e| (e.name(), e.value()));
+    let response = parse(
+        t,
+        "{\"f0\":[{\"f0\":\"PATH\",\"f1\":\"/bin\"},{\"f0\":\"HOME\",\"f1\":42}]}",
+    );
+    let mut n: usize = 0;
+    match selection.decode(&response, &mut n) {
+        Ok(_) => t.Error("decoding a number into a string field succeeded"),
+        Err(why) => {
+            assert_contains(t, "object list", why.clone(), "envVariables[1]");
+            assert_contains(t, "object list", why, "value");
+        }
+    }
+}
+
 // ─── the transport seam ───────────────────────────────────────────────
 
 /// A `Transport` that answers from a fixture and records what it was asked.
@@ -578,6 +732,14 @@ fn main() {
         ("TestNullObjectDecodesToNone", TestNullObjectDecodesToNone),
         ("TestEmptyListDecodes", TestEmptyListDecodes),
         ("TestScalarListIsALeaf", TestScalarListIsALeaf),
+        (
+            "TestScalarListNullabilityShapes",
+            TestScalarListNullabilityShapes,
+        ),
+        (
+            "TestListElementErrorsNameTheIndex",
+            TestListElementErrorsNameTheIndex,
+        ),
         ("TestChainWalksTheResponse", TestChainWalksTheResponse),
         (
             "TestChainExtensionDoesNotMutateTheReceiver",

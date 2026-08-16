@@ -294,11 +294,24 @@ impl<S: Sel> Sel for SubList<S> {
         let mut out = make!([]S::Out, 0, items.Len());
         let mut i: int = 0;
         while i < items.Len() {
-            out = append!(out, decode_sub(&items[i], self.field, &self.inner)?);
+            // Every element decodes from its own alias 0, and carries its index
+            // in any failure — a list is the one place where naming the field
+            // alone does not say which value went wrong.
+            let mut nested: usize = 0;
+            let decoded = self
+                .inner
+                .decode(&items[i], &mut nested)
+                .map_err(|why| element_path(self.field, i) + ": " + why)?;
+            out = append!(out, decoded);
             i += 1;
         }
         Ok(out)
     }
+}
+
+/// `field[i]` — where in a list a failure was found.
+fn element_path(field: &'static str, i: int) -> string {
+    string(field) + "[" + strconv::Itoa(i) + "]"
 }
 
 /// `fN:field(args){…}`, with the inner selection's counter starting fresh.
@@ -506,7 +519,12 @@ impl<T: FromJson> FromJson for slice<T> {
         let mut out = make!([]T, 0, items.Len());
         let mut i: int = 0;
         while i < items.Len() {
-            out = append!(out, T::from_json(&items[i])?);
+            // The index, for the same reason [`SubList`] carries one: the
+            // enclosing `Leaf` supplies the field name, and on its own that
+            // does not say which element failed.
+            let decoded =
+                T::from_json(&items[i]).map_err(|why| string("[") + strconv::Itoa(i) + "]: " + why)?;
+            out = append!(out, decoded);
             i += 1;
         }
         Ok(out)
