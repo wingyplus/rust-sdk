@@ -7,7 +7,10 @@ API bindings.
 .
 ├── Cargo.toml     the `dagger-sdk` crate — no_std, depends on goish
 ├── src/lib.rs     session parameters and the module entrypoint
+├── src/module.rs  what a module declares, and how a call reaches it
+├── src/objects.rs the engine objects a module can name; NOT under src/gen
 ├── src/gen/       API bindings; replaced wholesale by `dagger generate`
+├── macros/        the attribute macros that declare objects and functions
 └── codegen/       no_std binary: introspection schema in, `src/gen/` out
 ```
 
@@ -38,5 +41,7 @@ build, where cargo ignores a dependency's profiles and warns about them. The
 
 ## Status
 
-Scaffold — see the [repository README](../README.md#status). `Session::from_env`
-is real; `serve()` is not, and neither is any generated binding.
+See the [repository README](../README.md#status). The session protocol and
+`serve()` are real — a module registers, dispatches, and can declare a generator
+— but no generated binding is, so anything a module needs from the engine it
+asks for with `Session::query`.

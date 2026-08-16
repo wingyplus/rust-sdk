@@ -78,6 +78,13 @@ nothing to do with the module runtime.
   `let xs: [String!]! = ["a"]`. Constants shared between `rust-sdk.dang` and
   `mod.dang` are therefore duplicated and marked keep-in-step, the same way
   `rustImage` is between `mod.dang` and `runtime/main.dang`.
+- **The hand-written object types must stay out of `src/gen`.** `Changeset` and
+  `Workspace` in `sdk/src/objects.rs` are the only object types a module can
+  name today — the generator contract needs them — and they are deliberately at
+  the crate root. `dagger generate` replaces `src/gen/` wholesale, so moving
+  them there would delete them from every generated module: a module with a
+  `#[dagger::function(generate)]` would compile until the first `generate` and
+  never again.
 - **The engine owns module config.** `initModule` must not write `dagger.json`
   or `dagger-module.toml`; it returns only SDK-owned files. The engine merges in
   its own bookkeeping.

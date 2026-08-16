@@ -25,10 +25,12 @@
 //! # Status
 //!
 //! The protocol above runs end to end: [`serve`] registers what the module
-//! serves — its functions, their arguments, and which of them are checks — and
-//! dispatches an incoming call. What is missing is the other direction, a module
-//! calling the engine API back: the generated bindings are a placeholder, so
-//! function types are limited to scalars. See the repository README.
+//! serves — its functions and their arguments, which of them are checks, and
+//! which are generators — and dispatches an incoming call. What is missing is
+//! the other direction, a module calling the engine API back: the generated
+//! bindings are still a placeholder, so function types are limited to scalars
+//! and the objects in [`objects`], and [`Session::query`] is the only way to
+//! reach the engine. See the repository README.
 
 #![no_std]
 
@@ -39,10 +41,13 @@
 pub mod gen;
 
 mod module;
+mod objects;
 
 pub use module::{
-    encode_bool, encode_int, encode_string, encode_void, ArgDef, Arguments, FunctionDef, Object,
+    encode_bool, encode_int, encode_object, encode_string, encode_void, ArgDef, Arguments,
+    FunctionDef, Object,
 };
+pub use objects::{Changeset, ObjectId, Workspace};
 
 /// Declare a module's root object and the functions it serves.
 pub use dagger_sdk_macros::{check, function, object};
@@ -156,8 +161,9 @@ impl Session {
 /// Follow a chain of object keys into a JSON value.
 ///
 /// Every response this module reads is a nested single-field object shaped like
-/// the query that produced it, so one walker covers all of them.
-fn field(value: &json::Value, path: &[&'static str]) -> Result<json::Value, string> {
+/// the query that produced it, so one walker covers all of them — including the
+/// queries a module writes by hand while the bindings are a placeholder.
+pub fn field(value: &json::Value, path: &[&'static str]) -> Result<json::Value, string> {
     let mut current = value.clone();
     for key in path {
         let obj = match current.AsObject() {
@@ -174,7 +180,10 @@ fn field(value: &json::Value, path: &[&'static str]) -> Result<json::Value, stri
 }
 
 /// Follow [`field`] and require the result to be a string.
-fn field_string(value: &json::Value, path: &[&'static str]) -> Result<string, string> {
+///
+/// Most of what a query is asked for is an ID, so this is the accessor a
+/// hand-written query reaches for.
+pub fn field_string(value: &json::Value, path: &[&'static str]) -> Result<string, string> {
     let found = field(value, path)?;
     match found.AsString() {
         Some(s) => Ok(s.clone()),
@@ -186,8 +195,10 @@ fn field_string(value: &json::Value, path: &[&'static str]) -> Result<string, st
 ///
 /// Used for both the GraphQL arguments and the JSON request body, which share
 /// escaping rules. Going through `json::Marshal` rather than hand-rolling the
-/// escapes keeps module IDs — opaque, engine-chosen text — safe to embed.
-pub(crate) fn json_string(value: &string) -> string {
+/// escapes keeps module IDs — opaque, engine-chosen text — safe to embed. It is
+/// public for the same reason [`field`] is: a query written by hand has to
+/// quote its arguments, and this is what the rest of the crate quotes with.
+pub fn json_string(value: &string) -> string {
     let (encoded, err) = json::Marshal(&json::Value::String(value.clone()));
     if err != nil {
         fail(string("encoding a query argument: ") + err.Error());
@@ -274,7 +285,7 @@ fn register<T: Object>(session: &Session) -> Result<string, string> {
 
 /// Build one `Function` and return its ID.
 fn build_function(session: &Session, def: &FunctionDef) -> Result<string, string> {
-    let return_type = build_type_def(session, def.return_kind, false)?;
+    let return_type = build_type_def(session, def.return_kind, def.return_object, false)?;
 
     let mut query = string("{function(name:")
         + json_string(&string(def.name))
@@ -282,6 +293,15 @@ fn build_function(session: &Session, def: &FunctionDef) -> Result<string, string
         + json_string(&return_type)
         + "){";
     let mut depth: usize = 0;
+
+    // What makes `dagger generate` run this function. It takes no arguments:
+    // the engine reads the flag off the function, then enforces the rest of the
+    // contract — a `Changeset` return, and no required arguments — when the
+    // module loads.
+    if def.generator {
+        query = query + "withGenerator{";
+        depth += 1;
+    }
 
     if !def.doc.is_empty() {
         query = query + "withDescription(description:" + json_string(&string(def.doc)) + "){";
@@ -296,7 +316,7 @@ fn build_function(session: &Session, def: &FunctionDef) -> Result<string, string
     }
 
     for arg in def.args {
-        let arg_type = build_type_def(session, arg.kind, arg.optional)?;
+        let arg_type = build_type_def(session, arg.kind, arg.object, arg.optional)?;
         query = query
             + "withArg(name:"
             + json_string(&string(arg.name))
@@ -341,19 +361,38 @@ fn build_function(session: &Session, def: &FunctionDef) -> Result<string, string
 }
 
 /// Build a `TypeDef` of one kind and return its ID.
-fn build_type_def(session: &Session, kind: &str, optional: bool) -> Result<string, string> {
+///
+/// `object` names the engine object for `OBJECT_KIND` and is empty otherwise;
+/// an object is described by name rather than by kind, since the kind alone
+/// would not say which object it is.
+fn build_type_def(
+    session: &Session,
+    kind: &'static str,
+    object: &'static str,
+    optional: bool,
+) -> Result<string, string> {
     // `kind` is a GraphQL enum literal, so it is spliced unquoted. It only ever
-    // comes from the macro's fixed set, never from user text.
-    let query = if optional {
-        string("{typeDef{withKind(kind:") + kind + "){withOptional(optional:true){id}}}}"
+    // comes from the macro's fixed set, never from user text. An object's name
+    // is a string argument, so it goes through the usual quoting.
+    let (builder, head) = if object.is_empty() {
+        (string("withKind(kind:") + kind + ")", "withKind")
     } else {
-        string("{typeDef{withKind(kind:") + kind + "){id}}}"
+        (
+            string("withObject(name:") + json_string(&string(object)) + ")",
+            "withObject",
+        )
+    };
+
+    let query = if optional {
+        string("{typeDef{") + builder + "{withOptional(optional:true){id}}}}"
+    } else {
+        string("{typeDef{") + builder + "{id}}}"
     };
     let data = session.query(&query)?;
     if optional {
-        field_string(&data, &["typeDef", "withKind", "withOptional", "id"])
+        field_string(&data, &["typeDef", head, "withOptional", "id"])
     } else {
-        field_string(&data, &["typeDef", "withKind", "id"])
+        field_string(&data, &["typeDef", head, "id"])
     }
 }
 

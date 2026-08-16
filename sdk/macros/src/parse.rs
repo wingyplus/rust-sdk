@@ -54,6 +54,9 @@ pub struct Function {
     pub takes_self: bool,
     /// Which of the requested markers the method carried — `function`, `check`.
     pub markers: Vec<String>,
+    /// The tokens inside the marker attribute — `generate` in
+    /// `#[dagger::function(generate)]`. Empty when it carried none.
+    pub options: Vec<TokenTree>,
 }
 
 impl Function {
@@ -291,11 +294,19 @@ fn parse_items(body: TokenStream, markers: &[&str]) -> Result<Vec<Function>, Str
         }
         cursor += 1; // the body
 
-        let found: Vec<String> = markers
-            .iter()
-            .filter(|marker| attrs.iter().any(|a| is_marker(a, marker)))
-            .map(|marker| marker.to_string())
-            .collect();
+        // A method may carry more than one marker, and a marker may carry
+        // options: `#[dagger::function(generate)]`. Only one of them ever does,
+        // so the options collected here are that one's.
+        let mut found: Vec<String> = Vec::new();
+        let mut options: Vec<TokenTree> = Vec::new();
+        for marker in markers {
+            let marked = match attrs.iter().find(|a| is_marker(a, marker)) {
+                Some(attr) => attr,
+                None => continue,
+            };
+            found.push(marker.to_string());
+            options.extend(marked.args.iter().cloned());
+        }
         if found.is_empty() {
             continue;
         }
@@ -315,7 +326,15 @@ fn parse_items(body: TokenStream, markers: &[&str]) -> Result<Vec<Function>, Str
             text.trim_start_matches("->").trim().to_string()
         };
 
-        functions.push(Function { name, doc, params, return_ty, takes_self, markers: found });
+        functions.push(Function {
+            name,
+            doc,
+            params,
+            return_ty,
+            takes_self,
+            markers: found,
+            options,
+        });
     }
 
     Ok(functions)

@@ -11,8 +11,12 @@ use goish::{nil, string};
 pub struct ArgDef {
     /// API name, camelCased from the Rust parameter.
     pub name: &'static str,
-    /// The engine's TypeDefKind: `STRING_KIND`, `INTEGER_KIND`, `BOOLEAN_KIND`.
+    /// The engine's TypeDefKind: `STRING_KIND`, `INTEGER_KIND`, `BOOLEAN_KIND`,
+    /// `OBJECT_KIND`.
     pub kind: &'static str,
+    /// For `OBJECT_KIND`, the engine's name for the object — `Workspace`. Empty
+    /// for every other kind.
+    pub object: &'static str,
     /// Whether the caller may leave it out — `Option<T>`, or anything with a default.
     pub optional: bool,
     /// From `#[dagger(doc = "...")]`. Rust has no doc comments on parameters.
@@ -35,8 +39,14 @@ pub struct FunctionDef {
     pub doc: &'static str,
     /// The engine's TypeDefKind for the return value.
     pub return_kind: &'static str,
+    /// For an `OBJECT_KIND` return, the engine's name for the object —
+    /// `Changeset`. Empty for every other kind.
+    pub return_object: &'static str,
     /// From `#[dagger::check]`: `dagger check` runs this function.
     pub is_check: bool,
+    /// From `#[dagger::function(generate)]`: this function is a generator, so
+    /// `dagger generate` runs it and applies the `Changeset` it returns.
+    pub generator: bool,
     pub args: &'static [ArgDef],
 }
 
@@ -153,6 +163,30 @@ impl Arguments {
         }
     }
 
+    /// A required object argument, as the engine's ID for it.
+    ///
+    /// An object arrives as its ID — the same opaque string the engine hands
+    /// back for one — so this yields the ID and the generated dispatch wraps it
+    /// with [`crate::ObjectId::from_id`].
+    pub fn object(&self, name: &str) -> Result<string, string> {
+        match self.object_opt(name)? {
+            Some(value) => Ok(value),
+            None => Err(Arguments::missing(name)),
+        }
+    }
+
+    /// An optional object argument, as the engine's ID for it.
+    pub fn object_opt(&self, name: &str) -> Result<Option<string>, string> {
+        match self.lookup(name) {
+            None => Ok(None),
+            Some(value) if value.IsNull() => Ok(None),
+            Some(value) => match value.AsString() {
+                Some(s) => Ok(Some(s.clone())),
+                None => Err(Arguments::wrong_type(name, "an object id")),
+            },
+        }
+    }
+
     /// A required boolean argument.
     pub fn bool(&self, name: &str) -> Result<bool, string> {
         match self.bool_opt(name)? {
@@ -196,4 +230,12 @@ pub fn encode_bool(value: bool) -> string {
 /// JSON-encode a function that returns nothing.
 pub fn encode_void() -> string {
     string("null")
+}
+
+/// JSON-encode an object result as the engine's ID for it.
+///
+/// An object crosses the boundary as its ID in both directions, so returning
+/// one is returning the ID string the engine already holds.
+pub fn encode_object<T: crate::ObjectId>(value: &T) -> string {
+    crate::json_string(&value.id())
 }

@@ -28,6 +28,9 @@
 //!
 //! [`macro@check`] marks a function `dagger check` should run, the Go SDK's
 //! `+check` pragma.
+//!
+//! What a function *is* otherwise goes in the marker attribute — `#[dagger::function(generate)]`
+//! declares a generator, the way Go writes `+generate` in the doc comment.
 
 extern crate proc_macro;
 
@@ -59,6 +62,29 @@ use proc_macro::{Delimiter, TokenStream, TokenTree};
 /// The method's `///` doc comment becomes the function's description, and its
 /// name is camelCased for the API — `container_echo` is called as
 /// `container-echo` on the command line.
+///
+/// # Options
+///
+/// What a function *is* goes in the attribute itself — the one slot Go writes
+/// its `+` pragmas into.
+///
+/// | Option | Effect | Go SDK equivalent |
+/// | --- | --- | --- |
+/// | `generate` | The function is a generator: `dagger generate` runs it and applies the `Changeset` it returns | `+generate` |
+///
+/// ```ignore
+/// /// Regenerate the checked-in fixtures.
+/// #[dagger_sdk::function(generate)]
+/// pub fn generate(&self, ws: Workspace) -> Changeset {
+///     …
+/// }
+/// ```
+///
+/// A generator is called with nothing, so the engine holds it to a shape: it
+/// must return a `Changeset`, and every argument must be one the engine can
+/// leave out — an `Option<T>`, one with a `default`, or a `Workspace`, which
+/// the engine supplies itself. Both halves are checked at compile time, so a
+/// signature that would fail to load fails to compile instead.
 ///
 /// On its own this attribute is inert: it returns the method untouched so the
 /// path resolves and an IDE sees an ordinary function. [`macro@object`] on the
@@ -196,10 +222,14 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `string` (and `String`/`&str`), `int`, and `bool`, plus `Option<T>` of each.
 /// A function returning nothing maps to the engine's `VOID_KIND`.
 ///
-/// Object types such as `Container` and `Directory` are **not** supported yet:
-/// they need the generated bindings, which are still a placeholder. Using one
-/// is a compile error naming the type, rather than a confusing failure further
-/// along.
+/// Two object types are also understood — `Changeset` and `Workspace` — because
+/// the generator contract is written in terms of them. They cross the boundary
+/// as engine IDs; see `dagger_sdk::ObjectId`.
+///
+/// Every other object type, `Container` and `Directory` among them, is **not**
+/// supported yet: they need the generated bindings, which are still a
+/// placeholder. Using one is a compile error naming the type, rather than a
+/// confusing failure further along.
 #[proc_macro_attribute]
 pub fn object(_attr: TokenStream, item: TokenStream) -> TokenStream {
     match expand(item.clone()) {
@@ -269,6 +299,35 @@ fn is_dagger_attr(stream: TokenStream) -> bool {
             | "dagger::check"
             | "dagger_sdk::check"
     )
+}
+
+/// Options read from the marker attribute itself, `#[dagger::function(...)]`.
+#[derive(Default)]
+struct FunctionOptions {
+    generate: bool,
+}
+
+/// Read the options a function's marker attribute carried.
+///
+/// These are the flags Go writes as `+` pragmas in a doc comment — one slot,
+/// several markers — rather than the per-argument `#[dagger(...)]` options.
+fn function_options_of(f: &Function) -> Result<FunctionOptions, String> {
+    let mut options = FunctionOptions::default();
+    for part in split_commas(&f.options) {
+        match part.first() {
+            Some(TokenTree::Ident(id)) if part.len() == 1 && id.to_string() == "generate" => {
+                options.generate = true
+            }
+            _ => {
+                return Err(format!(
+                    "unrecognized option `{}` on `{}`; #[dagger::function(...)] accepts `generate`",
+                    render(&part),
+                    f.name
+                ))
+            }
+        }
+    }
+    Ok(options)
 }
 
 /// Options read from `#[dagger(...)]` on a parameter.
@@ -384,22 +443,35 @@ fn json_string(value: &str) -> String {
 /// A Rust type mapped onto the engine's TypeDefKind, plus its optionality.
 struct Kind {
     kind: &'static str,
+    /// The engine's name for an `OBJECT_KIND`; empty for a scalar.
+    object: &'static str,
     optional: bool,
     /// The accessor on `Arguments` that yields this type.
     getter: &'static str,
 }
 
+/// Strip one `Option<...>` layer, returning the type it wrapped.
+fn unwrap_option(ty: &str) -> Option<&str> {
+    ty.trim()
+        .strip_prefix("Option<")
+        .and_then(|rest| rest.strip_suffix('>'))
+        .map(|inner| inner.trim())
+}
+
+/// The last segment of a path, so `dagger_sdk::Changeset` reads as `Changeset`.
+fn last_segment(ty: &str) -> &str {
+    ty.rsplit("::").next().unwrap_or(ty).trim()
+}
+
 /// Map a Rust type to a TypeDefKind.
 ///
-/// Only scalars for now. Object types (`Container`, `Directory`, …) need the
+/// Scalars, plus the two engine objects the generator contract is written in
+/// terms of. Every other object type (`Container`, `Directory`, …) needs the
 /// generated bindings, which are still a placeholder, so they are rejected here
 /// with a message that says so rather than failing later as a type error.
 fn kind_of(ty: &str) -> Result<Kind, String> {
     let trimmed = ty.trim();
-    if let Some(inner) = trimmed
-        .strip_prefix("Option<")
-        .and_then(|rest| rest.strip_suffix('>'))
-    {
+    if let Some(inner) = unwrap_option(trimmed) {
         let mut inner = kind_of(inner)?;
         inner.optional = true;
         return Ok(inner);
@@ -410,12 +482,21 @@ fn kind_of(ty: &str) -> Result<Kind, String> {
         "bool" => ("BOOLEAN_KIND", "bool"),
         "" | "()" => ("VOID_KIND", "void"),
         other => {
-            return Err(format!(
-                "unsupported type `{other}`: the Rust SDK currently exposes only string, int and bool. Object types such as Container need the generated bindings, which are not implemented yet"
-            ))
+            // Written as `Changeset` or as `dagger_sdk::Changeset`; both name
+            // the same object as far as the engine is concerned.
+            let object = match last_segment(other) {
+                "Changeset" => "Changeset",
+                "Workspace" => "Workspace",
+                _ => {
+                    return Err(format!(
+                        "unsupported type `{other}`: the Rust SDK currently exposes string, int and bool, plus the Changeset and Workspace objects. Other object types such as Container need the generated bindings, which are not implemented yet"
+                    ))
+                }
+            };
+            return Ok(Kind { kind: "OBJECT_KIND", object, optional: false, getter: "object" });
         }
     };
-    Ok(Kind { kind, optional: false, getter })
+    Ok(Kind { kind, object: "", optional: false, getter })
 }
 
 /// `container_echo` -> `containerEcho`, matching the API's naming.
@@ -483,6 +564,7 @@ impl ::dagger_sdk::Object for {type_name} {{
 
 /// Render one `FunctionDef`.
 fn function_def(f: &Function) -> Result<String, String> {
+    let function_options = function_options_of(f)?;
     let mut args = String::new();
     for param in &f.params {
         let options = options_of(&param.attrs)?;
@@ -513,6 +595,18 @@ fn function_def(f: &Function) -> Result<String, String> {
                 f.name, param.name
             ));
         }
+
+        // The same holds for a generator, which the engine runs with nothing to
+        // pass it: it refuses to load a module whose generator has a required
+        // argument. A Workspace is the exception — the engine supplies that one
+        // itself. Checking here turns a module that fails to load into a
+        // signature that fails to compile, naming the argument.
+        if function_options.generate && !optional && kind.object != "Workspace" {
+            return Err(format!(
+                "`{}` is a generate function, so it must be callable with no arguments, but `{}` is required; make it an Option<T> or give it a `default`",
+                f.name, param.name
+            ));
+        }
         let ignore = options
             .ignore
             .iter()
@@ -521,9 +615,10 @@ fn function_def(f: &Function) -> Result<String, String> {
             .join(", ");
 
         args.push_str(&format!(
-            "::dagger_sdk::ArgDef {{ name: {name}, kind: {kind}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated} }},",
+            "::dagger_sdk::ArgDef {{ name: {name}, kind: {kind}, object: {object}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated} }},",
             name = quote_str(&camel_case(&param.name)),
             kind = quote_str(kind.kind),
+            object = quote_str(kind.object),
             optional = optional,
             doc = quote_str(&options.doc),
             default = quote_str(&options.default_value),
@@ -534,12 +629,25 @@ fn function_def(f: &Function) -> Result<String, String> {
     }
 
     let ret = kind_of(&f.return_ty)?;
+
+    // The other half of the generator contract: `dagger generate` applies what
+    // the function returns, so a generator returns the changes it made.
+    if function_options.generate && (ret.object != "Changeset" || ret.optional) {
+        return Err(format!(
+            "`{}` is a generate function, so it must return `Changeset`, but it returns `{}`",
+            f.name,
+            if f.return_ty.is_empty() { "()" } else { &f.return_ty }
+        ));
+    }
+
     Ok(format!(
-        "::dagger_sdk::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, is_check: {is_check}, args: &[{args}] }},",
+        "::dagger_sdk::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_object: {ret_object}, is_check: {is_check}, generator: {generator}, args: &[{args}] }},",
         name = quote_str(&camel_case(&f.name)),
         doc = quote_str(&f.doc),
         ret = quote_str(ret.kind),
+        ret_object = quote_str(ret.object),
         is_check = f.has_marker("check"),
+        generator = function_options.generate,
         args = args,
     ))
 }
@@ -556,12 +664,26 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
         } else {
             kind.getter.to_string()
         };
-        bindings.push_str(&format!(
-            "let {binding} = args.{accessor}({name})?;",
-            binding = param.name,
+        let read = format!(
+            "args.{accessor}({name})?",
             accessor = accessor,
             name = quote_str(&camel_case(&param.name)),
-        ));
+        );
+        // An object arrives as its ID, so it is rebuilt through the trait
+        // rather than used directly. Naming the type the way the parameter does
+        // means it resolves in the user's scope, whatever they imported it from.
+        let value = if kind.object.is_empty() {
+            read
+        } else {
+            let ty = unwrap_option(&param.ty).unwrap_or(param.ty.trim());
+            let from_id = format!("<{ty} as ::dagger_sdk::ObjectId>::from_id");
+            if kind.optional {
+                format!("{read}.map({from_id})")
+            } else {
+                format!("{from_id}({read})")
+            }
+        };
+        bindings.push_str(&format!("let {binding} = {value};", binding = param.name));
         call_args.push(param.name.clone());
     }
 
@@ -579,6 +701,7 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
         "STRING_KIND" => format!("::dagger_sdk::encode_string(&{call})"),
         "INTEGER_KIND" => format!("::dagger_sdk::encode_int({call})"),
         "BOOLEAN_KIND" => format!("::dagger_sdk::encode_bool({call})"),
+        "OBJECT_KIND" => format!("::dagger_sdk::encode_object(&{call})"),
         other => return Err(format!("cannot encode a return of kind {other}")),
     };
 
