@@ -1,0 +1,136 @@
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A superseded run tells us nothing; only the tip of a branch or PR matters.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in step with `rustImage` in mod.dang, runtime/main.dang and
+  # rust-sdk.dang — that is the compiler modules are actually built with, so
+  # testing against anything else tests a toolchain nothing ships on. It must
+  # also stay at or above the `rust-version` floor in the manifests (1.86,
+  # which is goish's).
+  RUST_VERSION: "1.90"
+
+# NOTE: do not add `RUSTFLAGS` here. Cargo lets the environment variable
+# override config files wholesale rather than merging with them, so setting it
+# would silently drop the `-nostartfiles -nodefaultlibs -static` link flags each
+# crate's .cargo/config.toml supplies, and every goish binary would fail to
+# link. Per-crate flags belong in that file.
+
+jobs:
+  goish-pin:
+    name: goish pin in step
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./.github/scripts/check-goish-pin.sh
+
+  crates:
+    name: ${{ matrix.name }}
+    # Must stay x86_64. goish's runtime is x86_64 inline asm with no
+    # cfg(target_arch) gates, so it does not compile for aarch64 at all — an
+    # arm64 runner fails with ~41 `the "att_syntax" option is only supported on
+    # x86` errors, not with a subtle test failure. This is also why no
+    # `rustup target add` is needed: the tuple every .cargo/config.toml names,
+    # x86_64-unknown-linux-gnu, is the runner's own host target.
+    runs-on: ubuntu-latest
+    strategy:
+      # One broken crate should not hide the state of the others.
+      fail-fast: false
+      matrix:
+        include:
+          # The repository's only test suite. `--locked` because this crate
+          # commits its Cargo.lock; a build that needs to update it is a change
+          # to the pinned goish, which should be deliberate.
+          #
+          # This is also the only crate `cargo test` works in. Everywhere else
+          # cargo compiles the lib/bin a second time as a test target, and those
+          # link libtest, which is std: std and goish both define the
+          # `panic_impl` lang item and rustc rejects the pair (E0152) before a
+          # single test runs. render-template avoids it by setting
+          # `test = false` on its other targets and running the suite as one
+          # `harness = false` binary over goish's `testing::Main`. So the builds
+          # below are deliberately builds — switching one to `cargo test` does
+          # not find more tests, it just breaks the job.
+          - name: render-template (test)
+            slug: render-template
+            dir: helpers/render-template
+            cmd: cargo test --locked
+
+          # The client library. A no_std rlib, so this compiles it without
+          # linking, and it pulls in dagger-macros as a path dependency.
+          - name: dagger (build)
+            slug: dagger
+            dir: sdk
+            cmd: cargo build
+
+          # Built above too, but listed on its own so a proc-macro break is
+          # reported against this crate rather than against the SDK. It is the
+          # one crate here that is not no_std — it runs inside rustc.
+          - name: dagger-macros (build)
+            slug: dagger-macros
+            dir: sdk/macros
+            cmd: cargo build
+
+          # `--release` is what mod.dang builds, and the release profile is
+          # where lto/codegen-units/strip apply, so it is the configuration
+          # worth proving links.
+          - name: codegen (build)
+            slug: codegen
+            dir: sdk/codegen
+            cmd: cargo build --release --locked
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
+          rustc --version
+          cargo --version
+
+      # goish is a git dependency, and cargo caches those under $CARGO_HOME/git,
+      # not $CARGO_HOME/registry — caching only the registry would re-clone it
+      # every run. `git/db` is the bare clone; cargo recreates `git/checkouts`
+      # from it without network, so that one is left out to keep the cache small.
+      - name: Cache cargo and ${{ matrix.dir }}/target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ${{ matrix.dir }}/target
+          # Every manifest is in the key: the goish rev is pinned in all of
+          # them and must move together, so any change to any one of them can
+          # invalidate a compiled goish.
+          key: cargo-${{ matrix.slug }}-${{ env.RUST_VERSION }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock', '**/Cargo.toml.tmpl') }}
+          restore-keys: |
+            cargo-${{ matrix.slug }}-${{ env.RUST_VERSION }}-
+
+      - name: ${{ matrix.cmd }}
+        working-directory: ${{ matrix.dir }}
+        run: ${{ matrix.cmd }}
+
+  # Single stable check to require in branch protection: a matrix leg's name
+  # changes whenever the matrix does, and a dropped leg would otherwise silently
+  # stop being required.
+  ci:
+    name: rust ci
+    if: always()
+    needs: [goish-pin, crates]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any job did not succeed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

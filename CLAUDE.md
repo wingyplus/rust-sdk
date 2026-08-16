@@ -221,3 +221,34 @@ dagger -m github.com/dagger/sdk-sdk -W . check
 To test a Rust change without an engine, build the crate against a local goish
 checkout — swap the git dep for a path dep in a scratch copy rather than editing
 the committed manifest.
+
+## CI
+
+`.github/workflows/rust.yml` runs on pushes to `main` and on pull requests. It
+covers the Rust side only — the dang sources and the sdk-sdk contract suite need
+an engine and are still run by hand.
+
+| Job | What it runs |
+| --- | --- |
+| `goish pin in step` | `.github/scripts/check-goish-pin.sh` |
+| `render-template (test)` | `cargo test --locked` |
+| `dagger (build)` | `cargo build` |
+| `dagger-macros (build)` | `cargo build` |
+| `codegen (build)` | `cargo build --release --locked` |
+
+Three things about it are load-bearing:
+
+- **Only `render-template` runs `cargo test`.** The other three are builds, and
+  that is not an oversight about missing tests — `cargo test` in a crate that
+  does not set `test = false` on its other targets compiles them a second time
+  against libtest, and rustc rejects the result with `duplicate lang item
+  panic_impl` (E0152) before anything runs. Adding a suite to another crate
+  means adopting the whole `harness = false` arrangement above first.
+- **The runner must stay x86_64**, for the reason goish is x86_64 everywhere
+  else here. There is no cross-linker step because the tuple in every
+  `.cargo/config.toml` is the runner's own host target.
+- **The workflow must not set `RUSTFLAGS`.** Cargo lets that environment
+  variable override config-file rustflags wholesale instead of merging, so it
+  would drop the `-nostartfiles -nodefaultlibs -static` flags and no goish
+  binary would link. `RUST_VERSION` is pinned to `1.90` to match `rustImage`,
+  and is one more thing to keep in step with the three dang files.

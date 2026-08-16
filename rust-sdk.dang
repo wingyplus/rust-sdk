@@ -10,7 +10,9 @@ let vendoredSdkFiles: [String!]! = ["LICENSE", "Cargo.toml", "src/**/*.rs", "mac
 # step with the same constants in mod.dang and runtime/main.dang: the helper is
 # a goish binary like everything else here, so it needs the same image, the same
 # target tuple, and both halves of cargo's download cache — git dependencies
-# land under $CARGO_HOME/git, not $CARGO_HOME/registry, and goish is one.
+# land under $CARGO_HOME/git, not $CARGO_HOME/registry, and goish is one. The
+# image's version is mirrored again by RUST_VERSION in
+# .github/workflows/rust.yml, which builds the same crates outside the engine.
 let rustImage = "rust:1.90-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f"
 let cargoTarget = "x86_64-unknown-linux-gnu"
 let cargoTargetDir = "/render-template-target"

@@ -1,6 +1,8 @@
 # Image codegen runs in. Kept in step with the same constant in
 # runtime/main.dang — the vendored SDK is compiled by the runtime with the
-# toolchain that generated it.
+# toolchain that generated it — and with RUST_VERSION in
+# .github/workflows/rust.yml, so CI compiles these crates with the version
+# modules actually ship on.
 let rustImage = "rust:1.90-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f"
 
 # Everything in this repository is a goish binary, so codegen links for the same

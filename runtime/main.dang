@@ -11,7 +11,8 @@ let cargoRegistryDir = "/usr/local/cargo/registry"
 let cargoGitDir = "/usr/local/cargo/git"
 
 # Build image. Kept in step with the same constant in ../mod.dang: bindings are
-# generated with this toolchain and compiled with it.
+# generated with this toolchain and compiled with it. Its version is also
+# mirrored by RUST_VERSION in ../.github/workflows/rust.yml.
 let rustImage = "rust:1.90-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f"
 
 # The target the module binary is linked for. goish is Linux x86_64 only, and
