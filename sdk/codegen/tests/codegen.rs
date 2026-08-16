@@ -446,6 +446,19 @@ fn TestRootFunction(t: &mut testing::T) {
     contains(t, &source, "    Query::new(transport, Chain::root())");
 }
 
+/// No `Sprintf` verb went unfilled.
+///
+/// `fmt::Sprintf!` is a `macro_rules!` that hands its format string to
+/// `sprintf_impl` at run time, so a wrong argument count is not a compile
+/// error: Go's formatter writes `%!s(MISSING)` or `%!(EXTRA …)` into the output
+/// and carries on. That artifact would land in somebody's `mod.rs` and fail to
+/// compile a long way from here, naming nothing useful. Every such marker
+/// starts `%!`, so one assertion catches all of them.
+fn TestNoFormatArtifacts(t: &mut testing::T) {
+    let source = render_fixture(t);
+    excludes(t, &source, "%!");
+}
+
 /// The same schema always renders the same source: types are emitted in name
 /// order, and nothing here depends on how the engine happened to serialise it.
 fn TestOutputIsDeterministic(t: &mut testing::T) {
@@ -525,6 +538,7 @@ fn main() {
         ("TestDeprecatedFields", TestDeprecatedFields),
         ("TestMetaTypesAreNotEmitted", TestMetaTypesAreNotEmitted),
         ("TestRootFunction", TestRootFunction),
+        ("TestNoFormatArtifacts", TestNoFormatArtifacts),
         ("TestOutputIsDeterministic", TestOutputIsDeterministic),
     ];
     os::Exit(testing::Main(tests));

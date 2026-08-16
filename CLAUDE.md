@@ -187,6 +187,13 @@ caches hold source, not objects, and stay shared.
   — `ToArg`, `arg_string`, `Args`, `arg_list` — belongs there and not in the
   generated file. This is the same rule that keeps `Changeset`, `Workspace` and
   the query builder at the crate root, applied from the other side.
+- **`fmt::Sprintf!` does not check its arguments.** It is a `macro_rules!` that
+  hands the format string to `sprintf_impl` at run time, so a `%s` without an
+  argument is not a compile error — Go's formatter writes `%!s(MISSING)` into
+  the output and carries on. In `sdk/codegen` that artifact lands in a generated
+  `mod.rs` and fails to compile in somebody's module instead. Keep format
+  strings short, and never pass schema text as one; `TestNoFormatArtifacts`
+  catches what slips through.
 - **Two names in the emitted code cannot collide with the schema's.** The local
   holding a field's argument list is `__args`, and the one in the list-of-object
   loader is `__id`, because `snake_case` never produces a leading underscore and

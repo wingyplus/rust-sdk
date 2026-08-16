@@ -43,7 +43,7 @@
 //! matching `loadXFromID`. An element type with no loader is the one shape that
 //! is skipped — the field stays reachable through `fetch`, which needs no ID.
 
-use goish::{append, int, make, slice, string, strings};
+use goish::{append, fmt, int, make, slice, string, strings};
 
 use crate::names::{enum_variant, escape_ident, rust_name, snake_case, upper_first};
 use crate::schema::{Field, InputValue, Schema, Type, TypeRef};
@@ -162,9 +162,11 @@ impl<'a> Renderer<'a> {
         self.w("\n/// The API root, reached over `transport`.\n");
         self.w("///\n");
         self.w("/// Every other object is reached from here, and inherits this transport.\n");
-        self.w(string("pub fn dag(transport: Arc<dyn Transport>) -> ") + query.clone() + " {\n");
-        self.w(string("    ") + query + "::new(transport, Chain::root())\n");
-        self.w("}\n");
+        self.w(fmt::Sprintf!(
+            "pub fn dag(transport: Arc<dyn Transport>) -> %s {\n    %s::new(transport, Chain::root())\n}\n",
+            query,
+            query
+        ));
     }
 
     // ─── enums ────────────────────────────────────────────────────────
@@ -180,66 +182,81 @@ impl<'a> Renderer<'a> {
         self.w("\n");
         self.doc("", &ty.doc);
         self.w("#[derive(Clone, Copy, PartialEq, Eq)]\n");
-        self.w(string("pub enum ") + ty.name.clone() + " {\n");
+        self.w(fmt::Sprintf!("pub enum %s {\n", ty.name));
         let mut i: int = 0;
         while i < ty.enum_values.Len() {
             let value = ty.enum_values[i].clone();
             self.doc("    ", &value.doc);
-            self.w(string("    ") + enum_variant(&value.name, &values) + ",\n");
+            self.w(fmt::Sprintf!("    %s,\n", enum_variant(&value.name, &values)));
             i += 1;
         }
         self.w("}\n\n");
 
-        self.w(string("impl ") + ty.name.clone() + " {\n");
+        self.w(fmt::Sprintf!("impl %s {\n", ty.name));
         self.w("    /// The value as the schema spells it, which is what a query carries.\n");
         self.w("    pub fn as_str(&self) -> &'static str {\n");
         self.w("        match self {\n");
         let mut i: int = 0;
         while i < ty.enum_values.Len() {
             let value = ty.enum_values[i].name.clone();
-            self.w(
-                string("            ")
-                    + ty.name.clone()
-                    + "::"
-                    + enum_variant(&value, &values)
-                    + " => "
-                    + quote(&value)
-                    + ",\n",
-            );
+            self.w(fmt::Sprintf!(
+                "            %s::%s => %q,\n",
+                ty.name,
+                enum_variant(&value, &values),
+                value
+            ));
             i += 1;
         }
         self.w("        }\n    }\n}\n\n");
 
         // A GraphQL enum literal is a bare name, so it is spliced unquoted.
-        self.w(string("impl ToArg for ") + ty.name.clone() + " {\n");
-        self.w("    fn to_arg(&self) -> string {\n");
-        self.w("        string(self.as_str())\n");
-        self.w("    }\n}\n\n");
+        self.w(fmt::Sprintf!(
+            concat!(
+                "impl ToArg for %s {\n",
+                "    fn to_arg(&self) -> string {\n",
+                "        string(self.as_str())\n",
+                "    }\n",
+                "}\n",
+                "\n",
+            ),
+            ty.name
+        ));
 
-        self.w(string("impl FromJson for ") + ty.name.clone() + " {\n");
-        self.w(string("    fn from_json(value: &json::Value) -> Result<") + ty.name.clone() + ", string> {\n");
-        self.w("        let found = match value.AsString() {\n");
-        self.w("            Some(found) => found,\n");
-        self.w("            None => return Err(string(\"expected a string\")),\n");
-        self.w("        };\n");
+        self.w(fmt::Sprintf!(
+            concat!(
+                "impl FromJson for %s {\n",
+                "    fn from_json(value: &json::Value) -> Result<%s, string> {\n",
+                "        let found = match value.AsString() {\n",
+                "            Some(found) => found,\n",
+                "            None => return Err(string(\"expected a string\")),\n",
+                "        };\n",
+            ),
+            ty.name,
+            ty.name
+        ));
         let mut i: int = 0;
         while i < ty.enum_values.Len() {
             let value = ty.enum_values[i].name.clone();
-            self.w(string("        if found == ") + quote(&value) + " {\n");
-            self.w(
-                string("            return Ok(")
-                    + ty.name.clone()
-                    + "::"
-                    + enum_variant(&value, &values)
-                    + ");\n",
-            );
-            self.w("        }\n");
+            self.w(fmt::Sprintf!(
+                concat!(
+                    "        if found == %q {\n",
+                    "            return Ok(%s::%s);\n",
+                    "        }\n",
+                ),
+                value,
+                ty.name,
+                enum_variant(&value, &values)
+            ));
             i += 1;
         }
-        self.w(
-            string("        Err(string(\"not a ") + ty.name.clone() + ": \") + found.clone())\n",
-        );
-        self.w("    }\n}\n");
+        self.w(fmt::Sprintf!(
+            concat!(
+                "        Err(string(\"not a %s: \") + found.clone())\n",
+                "    }\n",
+                "}\n",
+            ),
+            ty.name
+        ));
     }
 
     // ─── input objects ────────────────────────────────────────────────
@@ -248,25 +265,28 @@ impl<'a> Renderer<'a> {
         self.w("\n");
         self.doc("", &ty.doc);
         self.w("#[derive(Clone)]\n");
-        self.w(string("pub struct ") + ty.name.clone() + " {\n");
+        self.w(fmt::Sprintf!("pub struct %s {\n", ty.name));
         let mut i: int = 0;
         while i < ty.input_fields.Len() {
             let field = ty.input_fields[i].clone();
             self.doc("    ", &field.doc);
-            self.w(
-                string("    pub ")
-                    + rust_name(&field.name)
-                    + ": "
-                    + owned_field_type(&field.ty)
-                    + ",\n",
-            );
+            self.w(fmt::Sprintf!(
+                "    pub %s: %s,\n",
+                rust_name(&field.name),
+                owned_field_type(&field.ty)
+            ));
             i += 1;
         }
         self.w("}\n\n");
 
-        self.w(string("impl ToArg for ") + ty.name.clone() + " {\n");
-        self.w("    fn to_arg(&self) -> string {\n");
-        self.w("        let mut __args = Args::new();\n");
+        self.w(fmt::Sprintf!(
+            concat!(
+                "impl ToArg for %s {\n",
+                "    fn to_arg(&self) -> string {\n",
+                "        let mut __args = Args::new();\n",
+            ),
+            ty.name
+        ));
         let mut i: int = 0;
         while i < ty.input_fields.Len() {
             let field = ty.input_fields[i].clone();
@@ -280,23 +300,22 @@ impl<'a> Renderer<'a> {
                 } else {
                     access.clone()
                 };
-                self.w(
-                    string("        __args.put(")
-                        + quote(&field.name)
-                        + ", "
-                        + encode(&borrowed, &field.ty)
-                        + ");\n",
-                );
+                self.w(fmt::Sprintf!(
+                    "        __args.put(%q, %s);\n",
+                    field.name,
+                    encode(&borrowed, &field.ty)
+                ));
             } else {
-                self.w(string("        if let Some(value) = &") + access + " {\n");
-                self.w(
-                    string("            __args.put(")
-                        + quote(&field.name)
-                        + ", "
-                        + encode(&string("value"), &field.ty)
-                        + ");\n",
-                );
-                self.w("        }\n");
+                self.w(fmt::Sprintf!(
+                    concat!(
+                        "        if let Some(value) = &%s {\n",
+                        "            __args.put(%q, %s);\n",
+                        "        }\n",
+                    ),
+                    access,
+                    field.name,
+                    encode(&string("value"), &field.ty)
+                ));
             }
             i += 1;
         }
@@ -324,34 +343,39 @@ impl<'a> Renderer<'a> {
 
         self.w("\n");
         self.doc("", &ty.doc);
-        self.w(string("pub struct ") + ty.name.clone() + " {\n");
-        self.w("    transport: Arc<dyn Transport>,\n");
-        self.w("    q: Chain,\n");
-        self.w("}\n\n");
+        self.w(fmt::Sprintf!(
+            "pub struct %s {\n    transport: Arc<dyn Transport>,\n    q: Chain,\n}\n\n",
+            ty.name
+        ));
 
-        self.w(string("impl ") + ty.name.clone() + " {\n");
-        self.w("    /// Build one from a transport and the chain that reaches it.\n");
-        self.w(
-            string("    pub fn new(transport: Arc<dyn Transport>, q: Chain) -> ")
-                + ty.name.clone()
-                + " {\n",
-        );
-        self.w(string("        ") + ty.name.clone() + " { transport, q }\n");
-        self.w("    }\n\n");
-        self.w("    /// Read several fields of this object in one round trip.\n");
-        self.w("    ///\n");
-        self.w("    /// The closure is handed a namespace of every field this object has, and\n");
-        self.w("    /// returns a tuple of what to read.\n");
-        self.w("    pub fn fetch<S: Sel>(\n");
-        self.w("        &self,\n");
-        self.w(string("        select: impl FnOnce(&") + fields_type.clone() + ") -> S,\n");
-        self.w("    ) -> Result<S::Out, string> {\n");
-        self.w(
-            string("        engine::fetch(&*self.transport, &self.q, &select(&")
-                + fields_type.clone()
-                + "::new()))\n",
-        );
-        self.w("    }\n");
+        self.w(fmt::Sprintf!("impl %s {\n", ty.name));
+        self.w(fmt::Sprintf!(
+            concat!(
+                "    /// Build one from a transport and the chain that reaches it.\n",
+                "    pub fn new(transport: Arc<dyn Transport>, q: Chain) -> %s {\n",
+                "        %s { transport, q }\n",
+                "    }\n",
+                "\n",
+            ),
+            ty.name,
+            ty.name
+        ));
+        self.w(fmt::Sprintf!(
+            concat!(
+                "    /// Read several fields of this object in one round trip.\n",
+                "    ///\n",
+                "    /// The closure is handed a namespace of every field this object has, and\n",
+                "    /// returns a tuple of what to read.\n",
+                "    pub fn fetch<S: Sel>(\n",
+                "        &self,\n",
+                "        select: impl FnOnce(&%s) -> S,\n",
+                "    ) -> Result<S::Out, string> {\n",
+                "        engine::fetch(&*self.transport, &self.q, &select(&%s::new()))\n",
+                "    }\n",
+            ),
+            fields_type,
+            fields_type
+        ));
 
         let mut i: int = 0;
         while i < ty.fields.Len() {
@@ -364,14 +388,36 @@ impl<'a> Renderer<'a> {
         }
         self.w("}\n\n");
 
-        self.doc("", &(string("The fields of [`") + ty.name.clone() + "`], for [`" + ty.name.clone() + "::fetch`].\n\nA zero-sized namespace: it carries no data, only the field set."));
-        self.w(string("pub struct ") + fields_type.clone() + ";\n\n");
-        self.w(string("impl Fields for ") + fields_type.clone() + " {\n");
-        self.w(string("    fn new() -> ") + fields_type.clone() + " {\n");
-        self.w(string("        ") + fields_type.clone() + "\n");
-        self.w("    }\n}\n\n");
-
-        self.w(string("impl ") + fields_type.clone() + " {\n");
+        self.doc(
+            "",
+            &fmt::Sprintf!(
+                concat!(
+                    "The fields of [`%s`], for [`%s::fetch`].\n",
+                    "\n",
+                    "A zero-sized namespace: it carries no data, only the field set.",
+                ),
+                ty.name,
+                ty.name
+            ),
+        );
+        self.w(fmt::Sprintf!(
+            concat!(
+                "pub struct %s;\n",
+                "\n",
+                "impl Fields for %s {\n",
+                "    fn new() -> %s {\n",
+                "        %s\n",
+                "    }\n",
+                "}\n",
+                "\n",
+                "impl %s {\n",
+            ),
+            fields_type,
+            fields_type,
+            fields_type,
+            fields_type,
+            fields_type
+        ));
         let mut first = true;
         let mut i: int = 0;
         while i < ty.fields.Len() {
@@ -405,30 +451,41 @@ impl<'a> Renderer<'a> {
         self.w("\n");
         self.doc(
             "",
-            &(string("The optional arguments of [`") + ty.name.clone() + "::" + method_name(field)
-                + "`].\n\nEvery field left `None` is left out of the query, so the engine applies its own default."),
+            &fmt::Sprintf!(
+                concat!(
+                    "The optional arguments of [`%s::%s`].\n",
+                    "\n",
+                    "Every field left `None` is left out of the query, so the engine applies its own default.",
+                ),
+                ty.name,
+                method_name(field)
+            ),
         );
         self.w("#[derive(Clone, Default)]\n");
-        self.w(string("pub struct ") + name + lifetime + " {\n");
+        self.w(fmt::Sprintf!("pub struct %s%s {\n", name, lifetime));
         let mut i: int = 0;
         while i < optional.Len() {
             let arg = optional[i].clone();
             self.doc("    ", &arg_doc(&arg));
-            self.w(string("    pub ") + rust_name(&arg.name) + ": " + opts_field_type(&arg.ty) + ",\n");
+            self.w(fmt::Sprintf!(
+                "    pub %s: %s,\n",
+                rust_name(&arg.name),
+                opts_field_type(&arg.ty)
+            ));
             i += 1;
         }
         self.w("}\n");
     }
 
-    /// The `let mut args = …` block shared by every rendering of one field.
+    /// The `let mut __args = …` block shared by every rendering of one field.
     ///
-    /// A field with no arguments gets no block at all: an `args` nobody reads
+    /// A field with no arguments gets no block at all: an `__args` nobody reads
     /// would only be a warning in every generated module.
-    fn args_block(&mut self, indent: &'static str, field: &Field, with_opts: bool) {
+    fn args_block(&mut self, field: &Field, with_opts: bool) {
         if field.args.Len() == 0 {
             return;
         }
-        self.w(string(indent) + "let mut __args = Args::new();\n");
+        self.w("        let mut __args = Args::new();\n");
 
         let mut i: int = 0;
         while i < field.args.Len() {
@@ -437,15 +494,11 @@ impl<'a> Renderer<'a> {
             if !arg.ty.non_null {
                 continue;
             }
-            let param = rust_name(&arg.name);
-            self.w(
-                string(indent)
-                    + "__args.put("
-                    + quote(&arg.name)
-                    + ", "
-                    + encode(&param, &arg.ty)
-                    + ");\n",
-            );
+            self.w(fmt::Sprintf!(
+                "        __args.put(%q, %s);\n",
+                arg.name,
+                encode(&rust_name(&arg.name), &arg.ty)
+            ));
         }
 
         if !with_opts {
@@ -457,28 +510,31 @@ impl<'a> Renderer<'a> {
         while i < optional.Len() {
             let arg = optional[i].clone();
             i += 1;
-            self.w(string(indent) + "if let Some(value) = opts." + rust_name(&arg.name) + " {\n");
-            self.w(
-                string(indent)
-                    + "    __args.put("
-                    + quote(&arg.name)
-                    + ", "
-                    + encode(&string("value"), &arg.ty)
-                    + ");\n",
-            );
-            self.w(string(indent) + "}\n");
+            self.w(fmt::Sprintf!(
+                "        if let Some(value) = opts.%s {\n",
+                rust_name(&arg.name)
+            ));
+            self.w(fmt::Sprintf!(
+                "            __args.put(%q, %s);\n",
+                arg.name,
+                encode(&string("value"), &arg.ty)
+            ));
+            self.w("        }\n");
         }
     }
 
     /// The two signatures a field is reachable through, and the bodies behind
-    /// them. `build` renders the body given the expression holding the
-    /// already-built argument text.
+    /// them.
+    ///
+    /// `body` writes the method body, which is always one level in — a method
+    /// body has only ever one depth here, so the indent is a literal in what
+    /// `body` writes rather than a parameter threaded through it.
     fn field_pair(
         &mut self,
         ty: &Type,
         field: &Field,
         return_type: string,
-        body: &dyn Fn(&mut Renderer<'a>, &'static str),
+        body: &dyn Fn(&mut Renderer<'a>),
     ) {
         let optional = optional_args(field);
         let required = required_args(field);
@@ -489,11 +545,14 @@ impl<'a> Renderer<'a> {
             self.w("\n");
             self.doc("    ", &field_doc(field));
             self.deprecation("    ", field);
-            self.w(
-                string("    pub fn ") + name + "(&self" + params + ") -> " + return_type + " {\n",
-            );
-            self.args_block("        ", field, false);
-            body(self, "        ");
+            self.w(fmt::Sprintf!(
+                "    pub fn %s(&self%s) -> %s {\n",
+                name,
+                params,
+                return_type
+            ));
+            self.args_block(field, false);
+            body(self);
             self.w("    }\n");
             return;
         }
@@ -510,41 +569,39 @@ impl<'a> Renderer<'a> {
         self.doc("    ", &field_doc(field));
         self.doc(
             "    ",
-            &(string("Leaves every optional argument to the engine; see [`")
-                + with_opts.clone()
-                + "`](Self::"
-                + with_opts.clone()
-                + ") to set them."),
+            &fmt::Sprintf!(
+                "Leaves every optional argument to the engine; see [`%s`](Self::%s) to set them.",
+                with_opts,
+                with_opts
+            ),
         );
         self.deprecation("    ", field);
-        self.w(
-            string("    pub fn ") + name.clone() + "(&self" + params.clone() + ") -> "
-                + return_type.clone()
-                + " {\n",
-        );
-        self.w(
-            string("        self.") + with_opts.clone() + "(" + forward_list(&required) + "&"
-                + opts_type
-                + "::default())\n",
-        );
-        self.w("    }\n");
+        self.w(fmt::Sprintf!(
+            concat!(
+                "    pub fn %s(&self%s) -> %s {\n",
+                "        self.%s(%s&%s::default())\n",
+                "    }\n",
+            ),
+            name,
+            params,
+            return_type,
+            with_opts,
+            forward_list(&required),
+            opts_type
+        ));
 
         self.w("\n");
         self.doc("    ", &field_doc(field));
         self.deprecation("    ", field);
-        self.w(
-            string("    pub fn ")
-                + with_opts
-                + "(&self"
-                + params
-                + ", opts: &"
-                + opts_param
-                + ") -> "
-                + return_type
-                + " {\n",
-        );
-        self.args_block("        ", field, true);
-        body(self, "        ");
+        self.w(fmt::Sprintf!(
+            "    pub fn %s(&self%s, opts: &%s) -> %s {\n",
+            with_opts,
+            params,
+            opts_param,
+            return_type
+        ));
+        self.args_block(field, true);
+        body(self);
         self.w("    }\n");
     }
 
@@ -552,9 +609,11 @@ impl<'a> Renderer<'a> {
         if field.deprecated.Len() == 0 {
             return;
         }
-        self.w(
-            string(indent) + "#[deprecated(note = " + quote(&field.deprecated) + ")]\n",
-        );
+        self.w(fmt::Sprintf!(
+            "%s#[deprecated(note = %q)]\n",
+            indent,
+            field.deprecated
+        ));
     }
 
     /// A field as a method on the object itself: it either extends the chain or
@@ -565,13 +624,16 @@ impl<'a> Renderer<'a> {
 
         if !is_object {
             let out = leaf_type(&field.ty);
-            let selector = leaf_selector(field, &out);
+            let selector = builder_call("Leaf", &out, field);
             self.field_pair(
                 ty,
                 field,
                 string("Result<") + out + ", string>",
-                &move |r, indent| {
-                    r.w(string(indent) + "engine::fetch(&*self.transport, &self.q, &" + selector.clone() + ")\n");
+                &move |r| {
+                    r.w(fmt::Sprintf!(
+                        "        engine::fetch(&*self.transport, &self.q, &%s)\n",
+                        selector
+                    ));
                 },
             );
             return;
@@ -584,16 +646,13 @@ impl<'a> Renderer<'a> {
             let target = field.ty.name.clone();
             let graphql = field.name.clone();
             let args = args_expr(field);
-            self.field_pair(ty, field, target.clone(), &move |r, indent| {
-                r.w(
-                    string(indent)
-                        + target.clone()
-                        + "::new(self.transport.clone(), self.q.field("
-                        + quote(&graphql)
-                        + ", "
-                        + args.clone()
-                        + "))\n",
-                );
+            self.field_pair(ty, field, target.clone(), &move |r| {
+                r.w(fmt::Sprintf!(
+                    "        %s::new(self.transport.clone(), self.q.field(%q, %s))\n",
+                    target,
+                    graphql,
+                    args
+                ));
             });
             return;
         }
@@ -609,61 +668,56 @@ impl<'a> Renderer<'a> {
                 // A plain comment, not a doc comment: there is no item after it
                 // to document, and a `///` with nothing under it would attach
                 // itself to whatever method came next.
-                self.w("\n");
-                self.w(
-                    string("    // `") + rust_name(&field.name) + "` is a list of `" + element
-                        + "`, which has no loader, so an element cannot be rebuilt on its own.\n",
-                );
-                self.w("    // Read it through `fetch` instead, which needs no id.\n");
+                self.w(fmt::Sprintf!(
+                    concat!(
+                        "\n",
+                        "    // `%s` is a list of `%s`, which has no loader, so an element cannot be rebuilt on its own.\n",
+                        "    // Read it through `fetch` instead, which needs no id.\n",
+                    ),
+                    rust_name(&field.name),
+                    element
+                ));
                 return;
             }
         };
 
         let element = field.ty.name.clone();
-        let fields_type = element.clone() + "Fields";
-        let graphql = field.name.clone();
-        let has_args = field.args.Len() > 0;
+        let builder = builder_call("ListField", &(element.clone() + "Fields"), field);
         self.field_pair(
             ty,
             field,
             string("Result<slice<") + element.clone() + ">, string>",
-            &move |r, indent| {
-                r.w(string(indent) + "let ids: slice<" + id_type.clone() + "> = engine::fetch(\n");
-                r.w(string(indent) + "    &*self.transport,\n");
-                r.w(string(indent) + "    &self.q,\n");
-                let builder = if has_args {
-                    string("::with_args(") + quote(&graphql) + ", __args.finish())"
-                } else {
-                    string("::new(") + quote(&graphql) + ")"
-                };
-                r.w(
-                    string(indent)
-                        + "    &ListField::<"
-                        + fields_type.clone()
-                        + ">"
-                        + builder
-                        + ".select(|f| f.id()),\n",
-                );
-                r.w(string(indent) + ")?;\n");
-                r.w(string(indent) + "let mut out = make!([]" + element.clone() + ", 0, ids.Len());\n");
-                r.w(string(indent) + "let mut i: int = 0;\n");
-                r.w(string(indent) + "while i < ids.Len() {\n");
-                r.w(string(indent) + "    let mut __id = Args::new();\n");
-                r.w(string(indent) + "    __id.put(\"id\", arg_string(ids[i].clone()));\n");
-                r.w(string(indent) + "    out = append!(\n");
-                r.w(string(indent) + "        out,\n");
-                r.w(
-                    string(indent)
-                        + "        "
-                        + element.clone()
-                        + "::new(self.transport.clone(), Chain::root().field("
-                        + quote(&loader)
-                        + ", __id.finish()))\n",
-                );
-                r.w(string(indent) + "    );\n");
-                r.w(string(indent) + "    i += 1;\n");
-                r.w(string(indent) + "}\n");
-                r.w(string(indent) + "Ok(out)\n");
+            &move |r| {
+                r.w(fmt::Sprintf!(
+                    "        let ids: slice<%s> = engine::fetch(\n",
+                    id_type
+                ));
+                r.w("            &*self.transport,\n");
+                r.w("            &self.q,\n");
+                r.w(fmt::Sprintf!(
+                    "            &%s.select(|f| f.id()),\n",
+                    builder
+                ));
+                r.w("        )?;\n");
+                r.w(fmt::Sprintf!(
+                    "        let mut out = make!([]%s, 0, ids.Len());\n",
+                    element
+                ));
+                r.w("        let mut i: int = 0;\n");
+                r.w("        while i < ids.Len() {\n");
+                r.w("            let mut __id = Args::new();\n");
+                r.w("            __id.put(\"id\", arg_string(ids[i].clone()));\n");
+                r.w("            out = append!(\n");
+                r.w("                out,\n");
+                r.w(fmt::Sprintf!(
+                    "                %s::new(self.transport.clone(), Chain::root().field(%q, __id.finish()))\n",
+                    element,
+                    loader
+                ));
+                r.w("            );\n");
+                r.w("            i += 1;\n");
+                r.w("        }\n");
+                r.w("        Ok(out)\n");
             },
         );
     }
@@ -673,45 +727,26 @@ impl<'a> Renderer<'a> {
         let kind = field.ty.kind.clone();
         let is_object = kind == "OBJECT" || kind == "INTERFACE";
 
-        let (return_type, builder) = if !is_object {
-            (
-                string("Leaf<") + leaf_type(&field.ty) + ">",
-                string("Leaf::<") + leaf_type(&field.ty) + ">",
-            )
+        // Which builder a field opens is decided by its shape: a scalar is a
+        // leaf, and an object is one of three depending on whether it is
+        // nullable or a list.
+        let (kind, param) = if !is_object {
+            ("Leaf", leaf_type(&field.ty))
         } else {
             let fields_type = field.ty.name.clone() + "Fields";
             if field.ty.list {
-                (
-                    string("ListField<") + fields_type.clone() + ">",
-                    string("ListField::<") + fields_type + ">",
-                )
+                ("ListField", fields_type)
             } else if field.ty.non_null {
-                (
-                    string("Field<") + fields_type.clone() + ">",
-                    string("Field::<") + fields_type + ">",
-                )
+                ("Field", fields_type)
             } else {
-                (
-                    string("OptField<") + fields_type.clone() + ">",
-                    string("OptField::<") + fields_type + ">",
-                )
+                ("OptField", fields_type)
             }
         };
 
-        let graphql = field.name.clone();
-        let has_args = field.args.Len() > 0;
-        self.field_pair(ty, field, return_type, &move |r, indent| {
-            if has_args {
-                r.w(
-                    string(indent)
-                        + builder.clone()
-                        + "::with_args("
-                        + quote(&graphql)
-                        + ", __args.finish())\n",
-                );
-            } else {
-                r.w(string(indent) + builder.clone() + "::new(" + quote(&graphql) + ")\n");
-            }
+        let return_type = fmt::Sprintf!("%s<%s>", kind, param);
+        let builder = builder_call(kind, &param, field);
+        self.field_pair(ty, field, return_type, &move |r| {
+            r.w(fmt::Sprintf!("        %s\n", builder));
         });
     }
 
@@ -772,11 +807,6 @@ fn args_expr(field: &Field) -> string {
         return string("string(\"\")");
     }
     string("__args.finish()")
-}
-
-/// A Rust string literal holding `text`.
-fn quote(text: &string) -> string {
-    goish::strconv::Quote(text.clone())
 }
 
 fn method_name(field: &Field) -> string {
@@ -1003,13 +1033,22 @@ fn encode(expr: &string, ty: &TypeRef) -> string {
     expr.clone() + ".to_arg()"
 }
 
-/// `Leaf::<T>::new("stdout")` or its `with_args` form.
-fn leaf_selector(field: &Field, out: &string) -> string {
-    let head = string("Leaf::<") + out.clone() + ">";
+/// The call that opens one of the four selection builders:
+/// `Leaf::<string>::new("stdout")`, or
+/// `ListField::<CrumbFields>::with_args("crumbs", __args.finish())`.
+///
+/// The `with_args` form is only reachable when the field has arguments, which
+/// is also the only case where `args_block` emitted an `__args` to finish.
+fn builder_call(kind: &'static str, param: &string, field: &Field) -> string {
     if field.args.Len() == 0 {
-        return head + "::new(" + quote(&field.name) + ")";
+        return fmt::Sprintf!("%s::<%s>::new(%q)", kind, param, field.name);
     }
-    head + "::with_args(" + quote(&field.name) + ", __args.finish())"
+    fmt::Sprintf!(
+        "%s::<%s>::with_args(%q, __args.finish())",
+        kind,
+        param,
+        field.name
+    )
 }
 
 /// A field's own documentation, with the engine's deprecation note appended.
