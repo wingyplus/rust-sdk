@@ -68,7 +68,9 @@ compiles.
 
 See the [repository README](../README.md#status). The session protocol,
 `serve()` and the generated client are all real — a module registers,
-dispatches, and the bindings reach a live engine. What is missing is the seam:
-nothing hands a module's function the transport a generated object needs, so
-function signatures are still limited to scalars and the ID wrappers in
-`src/objects.rs`.
+dispatches, and the bindings reach a live engine. Reaching it from inside a
+function needs nothing threaded through: `dag()` opens the session the engine
+left in the environment, via `default_transport()` in `src/engine.rs`. What is
+missing is the seam in the other direction — `ObjectId` still wraps a bare ID
+with no transport behind it, so function signatures are limited to scalars and
+the ID wrappers in `src/objects.rs`.

@@ -355,10 +355,12 @@ What works today:
   object, holding the transport it was reached through and a lazily-built
   selection that is only sent when a leaf value is asked for; enums, input
   objects and per-field option structs alongside. It parses the schema with
-  goish's `encoding/json`; no serde equivalent is needed.
+  goish's `encoding/json`; no serde equivalent is needed. `dag()` takes no
+  argument: the engine puts the session in the module process's environment, so
+  the client opens it itself (`dag_with(transport)` when you have your own).
 
   ```rust
-  let ctr = dag(transport).container().from("alpine").with_exec(&["echo", "hi"]);
+  let ctr = dag().container().from("alpine").with_exec(&["echo", "hi"]);
   let out = ctr.stdout()?;                                  // one round trip
   let (platform, size) = ctr.fetch(|c| (                    // also one round trip
       c.platform(),
@@ -368,15 +370,17 @@ What works today:
 
 What is stubbed:
 
-- **The seam between a module and its client.** Both halves work; nothing joins
-  them. A generated object carries an `Arc<dyn Transport>`, and the dispatch
-  `#[dagger::object]` emits has no transport to give one — `ObjectId`, how an
-  object crosses the call boundary, still wraps a bare ID. So a module that must
-  reach the engine writes the query itself against `Session::query`, and
-  function signatures are limited to `string`, `int`, `bool`, and the
-  `Changeset`/`Workspace` ID wrappers a generator is declared with. Closing this
-  means threading a transport through `Arguments` into `ObjectId::from_id`, and
-  giving `encode_object` a way to fail — reading an object's id is a round trip.
+- **The seam between a module and its client.** Reaching the API from inside a
+  module works — `dag()` opens the process's own session, so a function needs
+  nothing handed to it. What does not work is passing the API's objects across
+  the call boundary: `ObjectId`, how an object crosses it, still wraps a bare ID
+  with no transport behind it, and the dispatch `#[dagger::object]` emits has
+  none to give it. So function signatures are limited to `string`, `int`,
+  `bool`, and the `Changeset`/`Workspace` ID wrappers a generator is declared
+  with — a function can call `dag()`, but cannot take a `Container` or return
+  one. Closing this means threading a transport through `Arguments` into
+  `ObjectId::from_id`, and giving `encode_object` a way to fail — reading an
+  object's id is a round trip.
 
 Function declaration and dispatch **work**: `#[dagger::object]`,
 `#[dagger::function]` and `#[dagger::check]` read signatures at compile time and

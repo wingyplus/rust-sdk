@@ -29,17 +29,21 @@
 //! which are generators — and dispatches an incoming call.
 //!
 //! The other direction now exists too. [`gen`] is generated from the engine's
-//! own schema and is a full typed client: `dag(transport).container()
+//! own schema and is a full typed client: `dag().container()
 //! .from("alpine").with_exec(&["echo", "hi"]).stdout()?` reaches a live engine.
+//! `dag()` takes no argument because it opens the session the engine put in
+//! this process's environment — see [`default_transport`] — so a module's
+//! function can reach the API without being handed anything.
 //!
-//! What is not yet wired is the seam between the two. A generated object holds
-//! an `Arc<dyn Transport>`, and nothing hands one to a module's function: the
-//! dispatch [`Object::invoke`](module::Object::invoke) emits carries only
-//! [`Arguments`], and [`ObjectId`] — how an object crosses the call boundary —
-//! still wraps a bare ID with no transport behind it. So function signatures
-//! remain limited to scalars and the two types in [`objects`], and a module
-//! that must reach the engine still does it through [`Session::query`]. See the
-//! repository README.
+//! What is not yet wired is the seam between the two: not *reaching* the API,
+//! but passing its objects across the call boundary. A generated object holds
+//! an `Arc<dyn Transport>`, and the dispatch
+//! [`Object::invoke`](module::Object::invoke) emits carries only [`Arguments`],
+//! while [`ObjectId`] — how an object crosses that boundary — still wraps a
+//! bare ID with no transport behind it. So function signatures remain limited
+//! to scalars and the two types in [`objects`]: a function can call `dag()`,
+//! but it cannot yet take a `Container` or return one. See the repository
+//! README.
 
 #![no_std]
 
@@ -70,7 +74,8 @@ pub mod querybuilder;
 mod objects;
 
 pub use engine::{
-    fetch, field, field_string, Session, Transport, SESSION_PORT_ENV, SESSION_TOKEN_ENV,
+    default_transport, fetch, field, field_string, Session, Transport, SESSION_PORT_ENV,
+    SESSION_TOKEN_ENV,
 };
 pub use module::{
     encode_bool, encode_int, encode_object, encode_string, encode_void, serve, ArgDef, Arguments,
