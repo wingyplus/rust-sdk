@@ -35,6 +35,8 @@
 extern crate proc_macro;
 
 mod parse;
+#[cfg(test)]
+mod tests;
 
 use parse::{quote_str, render, split_commas, unquote, Attr, Function};
 use proc_macro::{Delimiter, TokenStream, TokenTree};
@@ -193,22 +195,27 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// | `default = <literal>` | Value used when the caller omits the argument | `+default` |
 /// | `default_path = "..."` | For `Directory`/`File`, load from the context directory | `+defaultPath` |
 /// | `ignore = ["...", ...]` | Patterns to skip when loading a contextual argument | `+ignore` |
-///
-/// `default_path` and `ignore` are parsed and forwarded, but the engine accepts
-/// them only on object types — `Directory` and `File` — so using either today is
-/// a compile error naming the parameter. They become usable with the generated
-/// bindings.
 /// | `doc = "..."` | The argument's description | a doc comment |
 /// | `deprecated = "..."` | Marks the argument deprecated, with a migration note | `+deprecated` |
 ///
 /// `doc` is the one place this cannot mirror Go: Rust has no doc comments on
 /// parameters, so the description has to be an option.
 ///
+/// `default_path` and `ignore` apply to a `Directory` or `File` argument only —
+/// the engine loads it from the module's context directory when the caller
+/// leaves it out — so writing either on anything else is a compile error naming
+/// the parameter.
+///
 /// # Optionality
 ///
 /// An argument is optional when its type is `Option<T>`, or when it has a
 /// `default` — a defaulted argument the caller may omit is optional by
 /// construction. There is no `+optional` marker to write.
+///
+/// A `default_path` argument is a third case: it stays required in the
+/// signature, since the function always receives one, but the caller may still
+/// omit it because the engine supplies it. That is enough to satisfy the "no
+/// required arguments" rules that checks and generators are held to.
 ///
 /// # Checks
 ///
@@ -217,17 +224,37 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Supported types
 ///
-/// `string` (and `String`/`&str`), `int`, and `bool`, plus `Option<T>` of each.
-/// A function returning nothing maps to the engine's `VOID_KIND`.
+/// `string` (and `String`), `int`, and `bool`, plus `Option<T>` of each. A
+/// function returning nothing maps to the engine's `VOID_KIND`.
 ///
-/// Two object types are also understood — `Changeset` and `Workspace` — because
-/// the generator contract is written in terms of them. They cross the boundary
-/// as engine IDs; see `dagger::ObjectId`.
+/// Object types too: anything named as a plain type — `Directory`, `Container`,
+/// `Changeset`, `Workspace` — is registered as that engine object, under the
+/// last segment of the path, so `gen::Directory` and `Directory` are the same
+/// declaration.
 ///
-/// Every other object type, `Container` and `Directory` among them, is **not**
-/// supported yet: they need the generated bindings, which are still a
-/// placeholder. Using one is a compile error naming the type, rather than a
-/// confusing failure further along.
+/// ```ignore
+/// /// Build the sources in `src`.
+/// #[dagger::function]
+/// pub fn build(&self, #[dagger(default_path = ".")] src: Directory) -> Container {
+///     // A client method's `DirectoryID` argument is a `string`, so the object
+///     // goes back in as its id.
+///     let id = src.to_id().unwrap_or_else(|message| ::dagger::fail(message));
+///     dag().container().from("rust:1.86").with_directory("/src", id)
+/// }
+/// ```
+///
+/// An object crosses the boundary as an engine ID: an argument is rebuilt with
+/// [`ObjectId::from_id`] before the function sees it, and a returned one is
+/// resolved to its ID afterwards, which for a generated object is a round trip.
+/// So the type has to implement `dagger::ObjectId`, which the generated
+/// bindings do for every object the engine has a `loadXFromID` for — a name the
+/// engine has no such loader for, or a plain misspelling, is a compile error
+/// about that trait rather than a module that fails to load.
+///
+/// What is not supported is a list of anything, in either direction, and an
+/// optional return.
+///
+/// [`ObjectId::from_id`]: ../dagger/trait.ObjectId.html#tymethod.from_id
 #[proc_macro_attribute]
 pub fn object(_attr: TokenStream, item: TokenStream) -> TokenStream {
     match expand(item.clone()) {
@@ -428,8 +455,10 @@ fn json_string(value: &str) -> String {
 /// A Rust type mapped onto the engine's TypeDefKind, plus its optionality.
 struct Kind {
     kind: &'static str,
-    /// The engine's name for an `OBJECT_KIND`; empty for a scalar.
-    object: &'static str,
+    /// The engine's name for an `OBJECT_KIND`; empty for a scalar. Owned rather
+    /// than `&'static str` because it comes from the signature: any object the
+    /// engine knows can be named, so the set is the schema's, not this crate's.
+    object: String,
     optional: bool,
     /// The accessor on `Arguments` that yields this type.
     getter: &'static str,
@@ -448,12 +477,38 @@ fn last_segment(ty: &str) -> &str {
     ty.rsplit("::").next().unwrap_or(ty).trim()
 }
 
+/// Whether a type names an engine object.
+///
+/// There is nothing to look the name up in — the schema belongs to the engine
+/// the module will run against, not to this crate — so the shape of the name is
+/// the whole test: a path whose last segment is a Rust type name. `Directory`,
+/// `gen::Container` and `dagger::gen::Workspace` all pass; a generic, a
+/// reference or a slice does not, since none of those is a thing the engine has
+/// an ID for.
+fn is_object_name(ty: &str) -> bool {
+    // A wrapper's own punctuation, kept out before the last segment is read: it
+    // is `Vec<Directory>` that has to be rejected, and its last segment alone
+    // would look like a perfectly good object.
+    if ty.contains(['<', '>', '&', '[', ']', '(', ')', ',']) {
+        return false;
+    }
+    let mut chars = last_segment(ty).chars();
+    chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Map a Rust type to a TypeDefKind.
 ///
-/// Scalars, plus the two engine objects the generator contract is written in
-/// terms of. Every other object type (`Container`, `Directory`, …) needs the
-/// generated bindings, which are still a placeholder, so they are rejected here
-/// with a message that says so rather than failing later as a type error.
+/// Scalars are a fixed set; everything else that looks like a type name is an
+/// engine object, named to the engine exactly as the last segment of the path
+/// spells it. That is as far as this can check: the object's *existence* is the
+/// engine's to know, and a name it does not have is reported when the module
+/// registers. What the name has to satisfy here is that a type of that name
+/// implements [`ObjectId`], which the generated bindings do for every object
+/// the engine has a loader for — so a misspelled or unsupported one fails to
+/// compile, naming the trait.
+///
+/// [`ObjectId`]: ../dagger/trait.ObjectId.html
 fn kind_of(ty: &str) -> Result<Kind, String> {
     let trimmed = ty.trim();
     if let Some(inner) = unwrap_option(trimmed) {
@@ -467,21 +522,22 @@ fn kind_of(ty: &str) -> Result<Kind, String> {
         "bool" => ("BOOLEAN_KIND", "bool"),
         "" | "()" => ("VOID_KIND", "void"),
         other => {
-            // Written as `Changeset` or as `dagger::Changeset`; both name
-            // the same object as far as the engine is concerned.
-            let object = match last_segment(other) {
-                "Changeset" => "Changeset",
-                "Workspace" => "Workspace",
-                _ => {
-                    return Err(format!(
-                        "unsupported type `{other}`: the Rust SDK currently exposes string, int and bool, plus the Changeset and Workspace objects. Other object types such as Container need the generated bindings, which are not implemented yet"
-                    ))
-                }
-            };
-            return Ok(Kind { kind: "OBJECT_KIND", object, optional: false, getter: "object" });
+            // Written as `Directory` or as `gen::Directory`; both name the same
+            // object as far as the engine is concerned.
+            if !is_object_name(other) {
+                return Err(format!(
+                    "unsupported type `{other}`: a function's arguments and return are string, int, bool, or an engine object named as a plain type — `Directory`, `Container`, `Workspace`. Lists and other generics are not supported yet"
+                ));
+            }
+            return Ok(Kind {
+                kind: "OBJECT_KIND",
+                object: last_segment(other).to_string(),
+                optional: false,
+                getter: "object",
+            });
         }
     };
-    Ok(Kind { kind, object: "", optional: false, getter })
+    Ok(Kind { kind, object: String::new(), optional: false, getter })
 }
 
 /// `container_echo` -> `containerEcho`, matching the API's naming.
@@ -555,26 +611,34 @@ fn function_def(f: &Function) -> Result<String, String> {
         let options = options_of(&param.attrs)?;
         let kind = kind_of(&param.ty)?;
 
-        // The engine rejects these on anything but an object type — "can only
-        // set default path for Object, not STRING_KIND" — and it does so at
-        // module load, which is a bad place to learn about a typo. Since no
-        // object type is supported yet, catch it here where the message can
-        // name the parameter.
+        // The engine takes these on a contextual argument only — "can only set
+        // default path for Object, not STRING_KIND" — and it says so at module
+        // load, which is a bad place to learn about a typo. The two types it
+        // means are known here, so the message can name the parameter instead.
         if !options.default_path.is_empty() || !options.ignore.is_empty() {
             let which = if options.default_path.is_empty() { "ignore" } else { "default_path" };
-            return Err(format!(
-                "`{which}` on `{}` applies only to Directory and File arguments; those are object types, which need the generated bindings and are not supported yet",
-                param.name
-            ));
+            if kind.object != "Directory" && kind.object != "File" {
+                return Err(format!(
+                    "`{which}` on `{}` applies only to Directory and File arguments, and `{}` is `{}`",
+                    param.name, param.name, param.ty
+                ));
+            }
         }
         // A defaulted argument is optional whether or not it is an Option<T>:
         // the caller may leave it out and get the default.
         let optional = kind.optional || !options.default_value.is_empty();
 
+        // A `default_path` argument is not *optional* — the typedef says what
+        // the signature says — but the caller can still leave it out, because
+        // the engine loads it from the context directory. So it satisfies the
+        // two "callable with nothing" rules below without being declared
+        // optional to the engine.
+        let contextual = !options.default_path.is_empty();
+
         // `dagger check` runs a check with no arguments. The engine's answer to
         // a check that cannot be run is to leave it out of the check tree, so it
         // would just never appear — catch it here, where the message can say why.
-        if f.has_marker("check") && !optional {
+        if f.has_marker("check") && !optional && !contextual {
             return Err(format!(
                 "`{}` is a check, so it is run with no arguments, but `{}` is required; give it a `#[dagger(default = ...)]` or make it an `Option<T>`",
                 f.name, param.name
@@ -586,7 +650,7 @@ fn function_def(f: &Function) -> Result<String, String> {
         // argument. A Workspace is the exception — the engine supplies that one
         // itself. Checking here turns a module that fails to load into a
         // signature that fails to compile, naming the argument.
-        if function_options.generate && !optional && kind.object != "Workspace" {
+        if function_options.generate && !optional && !contextual && kind.object != "Workspace" {
             return Err(format!(
                 "`{}` is a generate function, so it must be callable with no arguments, but `{}` is required; make it an Option<T> or give it a `default`",
                 f.name, param.name
@@ -603,7 +667,7 @@ fn function_def(f: &Function) -> Result<String, String> {
             "::dagger::ArgDef {{ name: {name}, kind: {kind}, object: {object}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated} }},",
             name = quote_str(&camel_case(&param.name)),
             kind = quote_str(kind.kind),
-            object = quote_str(kind.object),
+            object = quote_str(&kind.object),
             optional = optional,
             doc = quote_str(&options.doc),
             default = quote_str(&options.default_value),
@@ -630,7 +694,7 @@ fn function_def(f: &Function) -> Result<String, String> {
         name = quote_str(&camel_case(&f.name)),
         doc = quote_str(&f.doc),
         ret = quote_str(ret.kind),
-        ret_object = quote_str(ret.object),
+        ret_object = quote_str(&ret.object),
         is_check = f.has_marker("check"),
         generator = function_options.generate,
         args = args,
@@ -681,12 +745,28 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
     // method is reached without the engine having constructed anything.
     let call = format!("{receiver}{fname}({args})", fname = f.name, args = call_args.join(", "));
     let ret = kind_of(&f.return_ty)?;
+
+    // A returned `Option<T>` would have to be declared optional to the engine,
+    // which `FunctionDef` has no room for yet, and every encoder below takes the
+    // bare value. Say so rather than emitting code that fails to typecheck
+    // somewhere inside the macro's output.
+    if ret.optional {
+        return Err(format!(
+            "`{}` returns `{}`; an optional return is not supported yet, so return `{}` and fail with `dagger::fail` instead",
+            f.name,
+            f.return_ty,
+            unwrap_option(&f.return_ty).unwrap_or("T")
+        ));
+    }
+
     let encode = match ret.kind {
         "VOID_KIND" => format!("{{ {call}; ::dagger::encode_void() }}"),
         "STRING_KIND" => format!("::dagger::encode_string(&{call})"),
         "INTEGER_KIND" => format!("::dagger::encode_int({call})"),
         "BOOLEAN_KIND" => format!("::dagger::encode_bool({call})"),
-        "OBJECT_KIND" => format!("::dagger::encode_object(&{call})"),
+        // Fallible, unlike the others: reading a generated object's id runs the
+        // chain the function built.
+        "OBJECT_KIND" => format!("::dagger::encode_object(&{call})?"),
         other => return Err(format!("cannot encode a return of kind {other}")),
     };
 

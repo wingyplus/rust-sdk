@@ -35,15 +35,17 @@
 //! this process's environment — see [`default_transport`] — so a module's
 //! function can reach the API without being handed anything.
 //!
-//! What is not yet wired is the seam between the two: not *reaching* the API,
-//! but passing its objects across the call boundary. A generated object holds
-//! an `Arc<dyn Transport>`, and the dispatch
-//! [`Object::invoke`](module::Object::invoke) emits carries only [`Arguments`],
-//! while [`ObjectId`] — how an object crosses that boundary — still wraps a
-//! bare ID with no transport behind it. So function signatures remain limited
-//! to scalars and the two types in [`objects`]: a function can call `dag()`,
-//! but it cannot yet take a `Container` or return one. See the repository
-//! README.
+//! The two meet at [`ObjectId`], which every generated object with a loader
+//! implements: a function may take a `Directory` and return a `Container`, and
+//! both cross the boundary as engine IDs, rebuilt on the way in and resolved on
+//! the way out. So the signature a module declares is not limited to scalars
+//! any more.
+//!
+//! What is still missing is the way back *in*: an argument of a client method
+//! that the schema types as `DirectoryID` is a `string` here, so handing an
+//! object to one goes through [`ObjectId::to_id`] rather than passing the
+//! object itself. Lists, in either direction, are not supported either. See the
+//! repository README.
 
 #![no_std]
 

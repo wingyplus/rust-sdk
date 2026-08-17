@@ -375,6 +375,46 @@ fn TestListWithoutALoaderIsSkipped(t: &mut testing::T) {
     excludes(t, &source, "    /// Not available as a method");
 }
 
+/// An object with a loader implements `ObjectId`, which is what lets a module
+/// function take it as an argument or hand it back.
+///
+/// The two directions are asymmetric and both are pinned here: `from_id` starts
+/// a fresh chain at the loader over the process's own session, since an
+/// argument arrives with nothing else attached, while `to_id` runs the chain
+/// the object already carries.
+fn TestObjectsCrossTheBoundaryById(t: &mut testing::T) {
+    let source = render_fixture(t);
+
+    contains(t, &source, "impl crate::ObjectId for Container {");
+    contains(t, &source, "    fn from_id(id: string) -> Container {");
+    contains(t, &source, "        __id.put(\"id\", arg_string(id));");
+    contains(
+        t,
+        &source,
+        "            Chain::root().field(\"loadContainerFromID\", __id.finish()),",
+    );
+    contains(t, &source, "            engine::default_transport(),");
+    contains(t, &source, "    fn to_id(&self) -> Result<string, string> {");
+    contains(
+        t,
+        &source,
+        "        engine::fetch(&*self.transport, &self.q, &Leaf::<string>::new(\"id\"))",
+    );
+}
+
+/// A type the engine has no loader for cannot be rebuilt from an id, so it does
+/// not implement the trait — and the note saying so has to be a plain comment,
+/// for the reason [`TestListWithoutALoaderIsSkipped`] gives.
+fn TestObjectWithoutALoaderIsNotAnObjectId(t: &mut testing::T) {
+    let source = render_fixture(t);
+
+    // `File` has an `id` field and no loader; `Query` has neither.
+    excludes(t, &source, "impl crate::ObjectId for File {");
+    excludes(t, &source, "impl crate::ObjectId for Query {");
+    contains(t, &source, "// `File` has no loader taking an id");
+    excludes(t, &source, "/// `File` has no loader taking an id");
+}
+
 /// Enums carry their schema spelling in both directions, and a GraphQL enum
 /// literal is spliced unquoted.
 fn TestEnums(t: &mut testing::T) {
@@ -534,6 +574,14 @@ fn main() {
         (
             "TestListWithoutALoaderIsSkipped",
             TestListWithoutALoaderIsSkipped,
+        ),
+        (
+            "TestObjectsCrossTheBoundaryById",
+            TestObjectsCrossTheBoundaryById,
+        ),
+        (
+            "TestObjectWithoutALoaderIsNotAnObjectId",
+            TestObjectWithoutALoaderIsNotAnObjectId,
         ),
         ("TestEnums", TestEnums),
         ("TestInputObjects", TestInputObjects),

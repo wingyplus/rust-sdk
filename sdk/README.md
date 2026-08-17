@@ -10,7 +10,7 @@ API bindings.
 ├── src/engine.rs       the session, and sending a selection over it
 ├── src/module.rs       what a module declares, and how a call reaches it
 ├── src/querybuilder.rs building a selection and decoding it; NOT under src/gen
-├── src/objects.rs      the engine objects a module can name; NOT under src/gen
+├── src/objects.rs      how an object crosses the call boundary; NOT under src/gen
 ├── src/gen/            API bindings; replaced wholesale by `dagger generate`
 ├── macros/             the attribute macros that declare objects and functions
 └── codegen/            no_std binary: introspection schema in, `src/gen/` out
@@ -34,12 +34,20 @@ schema with goish's `encoding/json` rather than serde.
 ```sh
 cd sdk && cargo test
 cd sdk/codegen && cargo test
+cd sdk/macros && cargo test
 ```
 
-Both suites are `harness = false` targets handed to goish's `testing::Main`;
+The first two are `harness = false` targets handed to goish's `testing::Main`;
 libtest is `std` and its `panic_impl` collides with goish's, so there are no
 `#[test]` functions. A new test has to be added to the list in the target's
 `main` or it never runs.
+
+`macros/` is the exception, and the only one: it is a proc-macro crate built for
+the host, so it has no goish in it and its tests are ordinary `#[test]`
+functions in `src/tests.rs`. They cover the type mapping and the code emitted
+for one signature. They cannot cover the parsing, because the `proc_macro` API
+panics when called outside a macro expansion — the `Function` values they work
+from are built by hand rather than parsed.
 
 `cargo test` in `sdk/` exercises the query builder against a hand-written
 stand-in for generated code. It cannot exercise the *real* bindings, because the
@@ -70,7 +78,17 @@ See the [repository README](../README.md#status). The session protocol,
 `serve()` and the generated client are all real — a module registers,
 dispatches, and the bindings reach a live engine. Reaching it from inside a
 function needs nothing threaded through: `dag()` opens the session the engine
-left in the environment, via `default_transport()` in `src/engine.rs`. What is
-missing is the seam in the other direction — `ObjectId` still wraps a bare ID
-with no transport behind it, so function signatures are limited to scalars and
-the ID wrappers in `src/objects.rs`.
+left in the environment, via `default_transport()` in `src/engine.rs`.
+
+Objects cross the call boundary too: `codegen` emits an `ObjectId` impl for
+every object the schema has a `loadXFromID` for, so a function can take a
+`Directory` and return a `Container`. An argument arrives as an ID and is
+rebuilt into a real client object, over the same session `dag()` opens; a
+returned one is resolved to its ID, which is a round trip and so can fail.
+
+What is left is the reverse trip: a client method's `DirectoryID` argument is a
+`string` in these bindings, so handing an object back to one goes through
+`ObjectId::to_id` rather than passing the object. Making it take the object
+would need the query builder to resolve an ID while rendering — the chain holds
+finished argument text today, and a method that extends it returns an object,
+not a `Result`.

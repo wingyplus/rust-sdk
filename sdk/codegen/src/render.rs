@@ -42,6 +42,11 @@
 //! three, so the list is fetched as IDs and each element rebuilt through the
 //! matching `loadXFromID`. An element type with no loader is the one shape that
 //! is skipped — the field stays reachable through `fetch`, which needs no ID.
+//!
+//! The same round trip is what a module function's arguments are made of, so
+//! every object with a loader also gets an `impl crate::ObjectId` — see
+//! [`Renderer::object_id`]. That is the whole of what lets a module take a
+//! `Directory` and hand back a `Container`.
 
 use goish::{append, fmt, int, make, slice, string, strings};
 
@@ -105,7 +110,9 @@ impl<'a> Renderer<'a> {
             "//!\n",
             "//! Every object holds the transport it was reached through, so a value taken\n",
             "//! out of one call can be used in the next without being handed a session\n",
-            "//! again. [`dag`] is where the first one comes from.\n",
+            "//! again. [`dag`] is where the first one comes from, and\n",
+            "//! [`ObjectId`](crate::ObjectId) — implemented by every object with a loader —\n",
+            "//! is where one handed to a module function comes from.\n",
             "//!\n",
             "//! Reading a field sends a query. Reading several sends one query:\n",
             "//!\n",
@@ -400,6 +407,8 @@ impl<'a> Renderer<'a> {
         }
         self.w("}\n\n");
 
+        self.object_id(ty);
+
         self.doc(
             "",
             &fmt::Sprintf!(
@@ -445,6 +454,69 @@ impl<'a> Renderer<'a> {
             self.selection_field(ty, &field);
         }
         self.w("}\n");
+    }
+
+    /// The `ObjectId` impl that lets this type cross a module function's
+    /// boundary.
+    ///
+    /// An object is passed to a module function, and returned from one, as its
+    /// id, so the two directions are the two halves of the trait: `from_id`
+    /// starts a fresh chain at the type's loader, and `to_id` runs the chain it
+    /// is called on and reads the id off the end.
+    ///
+    /// It takes both a loader and an `id` field to do that, and a type missing
+    /// either simply does not implement the trait — using one in a signature is
+    /// then a compile error in the module, which is where it belongs. Almost
+    /// everything in the engine's schema has both: of the 70 objects in v0.21,
+    /// the four without are `Query`, the `Node` interface, and the two
+    /// `_DirectiveApplication` types.
+    fn object_id(&mut self, ty: &Type) {
+        let loader = self.loader(&ty.name);
+        let id_type = self.id_type(&ty.name);
+        let loader = match (loader, id_type) {
+            // Every id in this schema is an `ID`-family scalar, which is text.
+            // Anything else could not be handed back to a loader that takes
+            // one, so it counts as no id at all.
+            (Some(loader), Some(id_type)) if id_type == "string" => loader,
+            _ => {
+                // A plain comment, not a doc comment: `impl` blocks are what
+                // surround it, and a `///` here would document whichever item
+                // came next.
+                self.w(fmt::Sprintf!(
+                    concat!(
+                        "// `%s` has no loader taking an id, so it cannot be rebuilt from one: it is not an\n",
+                        "// `ObjectId`, and a module function cannot take or return it.\n",
+                        "\n",
+                    ),
+                    ty.name
+                ));
+                return;
+            }
+        };
+
+        self.w(fmt::Sprintf!(
+            concat!(
+                "impl crate::ObjectId for %s {\n",
+                "    fn from_id(id: string) -> %s {\n",
+                "        let mut __id = Args::new();\n",
+                "        __id.put(\"id\", arg_string(id));\n",
+                "        %s::new(\n",
+                "            engine::default_transport(),\n",
+                "            Chain::root().field(%q, __id.finish()),\n",
+                "        )\n",
+                "    }\n",
+                "\n",
+                "    fn to_id(&self) -> Result<string, string> {\n",
+                "        engine::fetch(&*self.transport, &self.q, &Leaf::<string>::new(\"id\"))\n",
+                "    }\n",
+                "}\n",
+                "\n",
+            ),
+            ty.name,
+            ty.name,
+            ty.name,
+            loader
+        ));
     }
 
     /// Whether a field cannot be rendered at all.

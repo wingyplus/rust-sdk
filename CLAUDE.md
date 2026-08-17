@@ -182,6 +182,19 @@ caches hold source, not objects, and stay shared.
   fine by luck rather than by design, so it is checked: a consumer crate
   path-depending on a `tests/`-less copy builds clean. Don't add a `[[bin]]` or
   `[[example]]` to `sdk/Cargo.toml` on the same assumption without re-checking.
+- **An object type in a signature is matched by shape, not by lookup.** The
+  macros have no schema to check a name against — the schema belongs to the
+  engine the module will run against — so anything spelled as a plain type name
+  is registered as an engine object of that name, and the check that it *is* one
+  is that it implements `dagger::ObjectId`, which `sdk/codegen` emits for every
+  object with a `loadXFromID`. Two consequences. The name has to be read off the
+  last path segment, so `render` in `sdk/macros/src/parse.rs` has to collapse
+  ` : : ` — a path arrives as two `:` tokens, so `gen::Directory` renders as
+  `gen : : Directory`, whose last segment is the whole string, and the engine is
+  then told the argument is an object called that. And an object type in a
+  signature only works *after* `dagger generate`: `src/gen` is a placeholder
+  until then, which is why the templates and the two wrappers in
+  `sdk/src/objects.rs` stay on scalars and IDs.
 - **Generated code may only name what lives outside `src/gen`.** The bindings
   are written against `querybuilder.rs` and `engine.rs`, so anything they need
   — `ToArg`, `arg_string`, `Args`, `arg_list` — belongs there and not in the
@@ -247,6 +260,22 @@ and the bindings generator's suite run the same way, under the same rules:
 cd sdk && cargo test
 cd sdk/codegen && cargo test
 ```
+
+`sdk/macros` is the one suite that does *not* work that way, and it is the
+exception the rule allows: a proc-macro crate is built for the host and has no
+goish in it, so its tests are ordinary `#[test]` functions in `src/tests.rs`.
+
+```sh
+cd sdk/macros && cargo test
+```
+
+They reach only the half of the crate that speaks in `String` — the type
+mapping, and the text emitted for one signature. Anything that touches a
+`TokenTree` is untestable there: the `proc_macro` API panics with "procedural
+macro API is used outside of a procedural macro" when called from a test
+binary, so the `Function` values are built by hand rather than parsed. The
+parsing is covered by compiling a module against the crate, which is what the
+`generate against a live engine` step below does.
 
 `sdk/codegen`'s suite renders `tests/fixture.json`, a miniature schema, and
 asserts on the *text* it emits. That is deliberate: the generator's contract is

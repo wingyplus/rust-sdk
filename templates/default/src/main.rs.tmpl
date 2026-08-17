@@ -28,6 +28,12 @@ impl {{ .ModuleType }} {
     // `deprecated`. An argument is optional when it is an `Option<T>` or has a
     // default. Keep the `///` below short: it becomes the description shown by
     // `dagger functions`.
+    //
+    // The directory is a `string` here because this file has to compile before
+    // `dagger generate` has ever run, when `dagger::gen` is still a placeholder.
+    // Once it has run, an argument can be the object itself:
+    //
+    //     pub fn grep_dir(&self, directory_arg: dagger::gen::Directory, …)
     /// Returns the pattern and directory it would grep.
     #[dagger::function]
     pub fn grep_dir(

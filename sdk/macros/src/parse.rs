@@ -172,10 +172,17 @@ pub fn split_commas(tokens: &[TokenTree]) -> Vec<Vec<TokenTree>> {
 
 /// Render tokens back to source text, collapsing the spaces `to_string` adds
 /// inside paths and generics so `Option < string >` reads as `Option<string>`.
+///
+/// A path separator arrives as two `:` tokens, not one `::`, so it is ` : : `
+/// that has to be collapsed — and every one of them, since `a::b::c` is three
+/// segments. Getting this wrong is quiet: `gen::Directory` renders as
+/// `gen : : Directory`, whose last segment is the whole string, and the engine
+/// is then told the argument is an object of that name.
 pub fn render(tokens: &[TokenTree]) -> String {
     let raw: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
     let joined = raw.join(" ");
     joined
+        .replace(" : : ", "::")
         .replace(" :: ", "::")
         .replace(" < ", "<")
         .replace(" > ", ">")

@@ -21,8 +21,8 @@ pub struct ArgDef {
     /// The engine's TypeDefKind: `STRING_KIND`, `INTEGER_KIND`, `BOOLEAN_KIND`,
     /// `OBJECT_KIND`.
     pub kind: &'static str,
-    /// For `OBJECT_KIND`, the engine's name for the object — `Workspace`. Empty
-    /// for every other kind.
+    /// For `OBJECT_KIND`, the engine's name for the object — `Directory`,
+    /// `Workspace`. Empty for every other kind.
     pub object: &'static str,
     /// Whether the caller may leave it out — `Option<T>`, or anything with a default.
     pub optional: bool,
@@ -47,7 +47,7 @@ pub struct FunctionDef {
     /// The engine's TypeDefKind for the return value.
     pub return_kind: &'static str,
     /// For an `OBJECT_KIND` return, the engine's name for the object —
-    /// `Changeset`. Empty for every other kind.
+    /// `Changeset`, `Container`. Empty for every other kind.
     pub return_object: &'static str,
     /// From `#[dagger::check]`: `dagger check` runs this function.
     pub is_check: bool,
@@ -242,9 +242,11 @@ pub fn encode_void() -> string {
 /// JSON-encode an object result as the engine's ID for it.
 ///
 /// An object crosses the boundary as its ID in both directions, so returning
-/// one is returning the ID string the engine already holds.
-pub fn encode_object<T: crate::ObjectId>(value: &T) -> string {
-    crate::json_string(&value.id())
+/// one is returning an ID. Fallible because obtaining that ID is a round trip
+/// for a generated object: what the function returns is a chain nothing has
+/// sent yet, and asking for its ID is what runs it.
+pub fn encode_object<T: crate::ObjectId>(value: &T) -> Result<string, string> {
+    Ok(crate::json_string(&value.to_id()?))
 }
 
 /// Serve this module: answer the engine's pending function call.

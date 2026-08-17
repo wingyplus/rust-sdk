@@ -182,12 +182,13 @@ fail to load:
 - every argument is one the engine can leave out: an `Option<T>`, one with a
   `default`, or a `Workspace`, which the engine injects itself.
 
-That query-writing is the part the generated bindings replace. They exist now —
-`dagger::gen` is the whole engine API, typed — but a module's function is not
-yet handed the connection they need, so a generator still reaches the engine
-through [`Session::query`](./sdk/src/lib.rs), and `Changeset` and `Workspace`
-remain ID wrappers rather than real objects — enough to satisfy the contract, no
-more.
+That query-writing is the part the generated bindings replace. The example above
+uses the `Changeset` and `Workspace` in `dagger::objects`, which are ID wrappers
+and nothing more: they are hand-written because a scaffolded module has to
+compile before its first `dagger generate`, when `dagger::gen` is still a
+placeholder. Once it has generated, `dagger::gen::Workspace` and
+`dagger::gen::Changeset` are the real objects, and a generator can be written
+against `dag()` like any other function.
 
 ### Argument options
 
@@ -208,22 +209,28 @@ parameters, so a description has to be written as an option.
 An argument is optional when its type is `Option<T>` **or** when it has a
 `default` — there is no `+optional` marker to write.
 
-`default_path` and `ignore` are parsed and forwarded, but the engine accepts
-them only on object types (`Directory`, `File`). Naming one in a signature is
-still a compile error — see the seam in [Status](#status) — so using either
-today fails at compile time, naming the parameter, rather than at module load.
+`default_path` and `ignore` apply to a `Directory` or `File` argument only, the
+way the engine has it: writing either on anything else is a compile error naming
+the parameter, rather than a module that fails to load. Such an argument is not
+declared optional — the function always receives one — but the caller may still
+leave it out, since the engine loads it from the context directory. That is
+enough to satisfy the "no required arguments" rule a check or a generator is
+held to.
 
 ### Supported types
 
-`string` (also `String` and `&str`), `int`, `bool`, and `Option<T>` of each. A
-function returning nothing maps to `VOID_KIND`.
+`string` (also `String`), `int`, `bool`, and `Option<T>` of each. A function
+returning nothing maps to `VOID_KIND`.
 
-`Changeset` and `Workspace` are understood too, since the generator contract is
-written in terms of them; they cross the boundary as engine IDs. Every other
-object type, `Container` among them, is rejected at compile time. The generated
-bindings define those types — that is no longer what is missing — but nothing
-yet hands a function the engine connection they carry; see
-[Status](#status).
+Object types too: anything named as a plain type — `Directory`, `Container`,
+`Changeset`, `Workspace` — is declared to the engine as that object, under the
+last segment of the path, so `gen::Directory` and `Directory` are the same
+declaration. It has to be a type that implements `dagger::ObjectId`, which the
+generated bindings do for every object the engine has a loader for, so a
+misspelling is a compile error about that trait.
+
+Lists are not supported in either direction, and neither is an optional return.
+Both are compile errors naming what is unsupported.
 
 ### Checks
 
@@ -368,19 +375,42 @@ What works today:
   ))?;
   ```
 
+- Object types in a signature: a function can take a `Directory` and return a
+  `Container`, alongside `string`, `int` and `bool`. An object crosses the
+  boundary as an engine ID: an argument is rebuilt into a real client object
+  before the function sees it — over the session `dag()` opens, so nothing is
+  threaded through — and a returned one is resolved back to its ID, which is a
+  round trip and so can fail. `codegen` emits the `ObjectId` impl that does both
+  for every object the engine has a `loadXFromID` for.
+
+  ```rust
+  /// Grep a directory for a pattern.
+  #[dagger::function]
+  pub fn grep_dir(&self, directory_arg: Directory, #[dagger(default = "hello")] pattern: string) -> string {
+      let source = directory_arg.to_id().unwrap_or_else(|m| dagger::fail(m));
+      dag().container().from("alpine:latest")
+          .with_mounted_directory("/mnt", source)
+          .with_workdir("/mnt")
+          .with_exec(&["grep", "-R", pattern.as_ref(), "."])
+          .stdout()
+          .unwrap_or_else(|m| dagger::fail(m))
+  }
+  ```
+
 What is stubbed:
 
-- **The seam between a module and its client.** Reaching the API from inside a
-  module works — `dag()` opens the process's own session, so a function needs
-  nothing handed to it. What does not work is passing the API's objects across
-  the call boundary: `ObjectId`, how an object crosses it, still wraps a bare ID
-  with no transport behind it, and the dispatch `#[dagger::object]` emits has
-  none to give it. So function signatures are limited to `string`, `int`,
-  `bool`, and the `Changeset`/`Workspace` ID wrappers a generator is declared
-  with — a function can call `dag()`, but cannot take a `Container` or return
-  one. Closing this means threading a transport through `Arguments` into
-  `ObjectId::from_id`, and giving `encode_object` a way to fail — reading an
-  object's id is a round trip.
+- **Handing an object back to a client method.** As the example above shows, a
+  `Directory` reaches `withMountedDirectory` as `to_id()` rather than as itself:
+  the schema types that argument `DirectoryID`, which these bindings map to
+  `string`. Passing the object would mean resolving its ID while the query is
+  being built, and a method that extends the chain returns an object rather than
+  a `Result` — so it is the query builder that would have to change, not the
+  generator.
+
+- **Lists, and optional returns.** A function's arguments and return are one
+  value each: `slice<string>` in a signature, or `Option<T>` in return position,
+  are compile errors naming what is unsupported rather than confusing failures
+  further along.
 
 Function declaration and dispatch **work**: `#[dagger::object]`,
 `#[dagger::function]` and `#[dagger::check]` read signatures at compile time and
