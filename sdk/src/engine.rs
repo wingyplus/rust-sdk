@@ -5,6 +5,8 @@
 //! connection; [`fetch`] is how a selection built by
 //! [`querybuilder`](crate::querybuilder) crosses it.
 
+use alloc::sync::Arc;
+
 use goish::encoding::base64;
 use goish::encoding::json;
 use goish::net::http;
@@ -168,6 +170,33 @@ pub trait Transport {
 impl Transport for Session {
     fn query(&self, document: &string) -> Result<json::Value, string> {
         Session::query(self, document)
+    }
+}
+
+/// The transport for the session this process was started in.
+///
+/// This is what the generated `dag()` is built on: the engine puts the session
+/// in the environment before it starts a module, so the common case needs no
+/// argument, and the client can be reached from anywhere without one being
+/// threaded through.
+///
+/// A missing session is not recoverable — the process was not started by the
+/// engine, so there is nothing to talk to — so this goes to [`fail`] rather
+/// than returning an error, the way the Go SDK's package-level `dag` panics in
+/// `init`. Use [`Session::from_env`] directly to handle the absence yourself.
+///
+/// A new [`Session`] each call, deliberately: it is two environment lookups and
+/// holds no connection — [`Session::query`] opens one per request — so there is
+/// nothing to keep alive, and nothing to synchronise in a `no_std` global.
+///
+/// [`fail`]: crate::fail
+pub fn default_transport() -> Arc<dyn Transport> {
+    match Session::from_env() {
+        Some(session) => Arc::new(session),
+        None => crate::fail(
+            string("no engine session: ") + SESSION_PORT_ENV + " and " + SESSION_TOKEN_ENV
+                + " are not set. Is this running as a Dagger module?",
+        ),
     }
 }
 

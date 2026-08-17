@@ -438,11 +438,14 @@ fn TestMetaTypesAreNotEmitted(t: &mut testing::T) {
     excludes(t, &source, "pub struct __Type");
 }
 
-/// The root is reached through one free function, which is where a transport
-/// enters the generated surface.
+/// The root is reached through two free functions: the no-argument one a
+/// module calls, and the one taking a transport that it is built on — which is
+/// where a caller-supplied transport enters the generated surface.
 fn TestRootFunction(t: &mut testing::T) {
     let source = render_fixture(t);
-    contains(t, &source, "pub fn dag(transport: Arc<dyn Transport>) -> Query {");
+    contains(t, &source, "pub fn dag() -> Query {");
+    contains(t, &source, "    dag_with(engine::default_transport())");
+    contains(t, &source, "pub fn dag_with(transport: Arc<dyn Transport>) -> Query {");
     contains(t, &source, "    Query::new(transport, Chain::root())");
 }
 

@@ -110,7 +110,7 @@ impl<'a> Renderer<'a> {
             "//! Reading a field sends a query. Reading several sends one query:\n",
             "//!\n",
             "//! ```ignore\n",
-            "//! let ctr = dag(transport).container().from(\"alpine\").with_exec(&[\"echo\", \"hi\"]);\n",
+            "//! let ctr = dag().container().from(\"alpine\").with_exec(&[\"echo\", \"hi\"]);\n",
             "//! let (out, platform) = ctr.fetch(|c| (c.stdout(), c.platform()))?;\n",
             "//! ```\n",
             "\n",
@@ -152,18 +152,30 @@ impl<'a> Renderer<'a> {
         ));
     }
 
-    /// The free function that opens an API root over a transport.
+    /// The free functions that open an API root: one over the process's own
+    /// session, one over a transport the caller supplies.
     fn root(&mut self) {
         let query = self.schema.query_type.clone();
         if self.schema.find(&query).is_none() {
             return;
         }
 
+        self.w("\n/// The API root, over the session this process was started in.\n");
+        self.w("///\n");
+        self.w("/// Every other object is reached from here, and inherits its transport.\n");
+        self.w("/// The session comes from the environment the engine set, so this is the\n");
+        self.w("/// spelling a module wants; see `dag_with` to supply a transport instead.\n");
+        self.w(fmt::Sprintf!(
+            "pub fn dag() -> %s {\n    dag_with(engine::default_transport())\n}\n",
+            query
+        ));
+
         self.w("\n/// The API root, reached over `transport`.\n");
         self.w("///\n");
-        self.w("/// Every other object is reached from here, and inherits this transport.\n");
+        self.w("/// What [`dag`] is built on, for a caller with its own transport — a test\n");
+        self.w("/// double, a recording proxy, a session it opened itself.\n");
         self.w(fmt::Sprintf!(
-            "pub fn dag(transport: Arc<dyn Transport>) -> %s {\n    %s::new(transport, Chain::root())\n}\n",
+            "pub fn dag_with(transport: Arc<dyn Transport>) -> %s {\n    %s::new(transport, Chain::root())\n}\n",
             query,
             query
         ));
