@@ -6,12 +6,28 @@
 //!
 //! [`serve`] is the entry point a module's `main` calls: it answers the
 //! engine's pending call, either by describing what this module serves
-//! ([`register`]) or by running one of its functions ([`dispatch`]).
+//! ([`register`]) or by running one of its functions.
+//!
+//! # Why this talks to the engine through [`querybuilder`]
+//!
+//! Registration is a client of the API like any other — `typeDef`, `function`
+//! and `module` are ordinary schema fields — so it is written against
+//! [`Chain`] and [`Leaf`] rather than by pasting GraphQL together. What it
+//! cannot use is [`gen`](crate::gen): `src/gen` is a placeholder until a
+//! module's first `dagger generate`, and the engine has to *load* a module —
+//! which runs the registration below — before generation can enumerate
+//! anything. So the few fields needed here are named as string literals, the
+//! way the generated bindings name them, and [`ArgValueFields`] is the one
+//! hand-written stand-in for a `Fields` namespace codegen would otherwise
+//! emit.
+//!
+//! [`querybuilder`]: crate::querybuilder
 
 use goish::encoding::json;
-use goish::{nil, os, string};
+use goish::{nil, os, slice, string};
 
-use crate::engine::{field, field_string, Session};
+use crate::engine::{self, Session, Transport};
+use crate::querybuilder::{arg_list, arg_string, Args, Chain, Fields, FromJson, Leaf, ListField};
 use crate::{fail, json_string};
 
 /// One argument of an exported function.
@@ -74,44 +90,35 @@ pub trait Object {
 
 /// The arguments the engine supplied for this call.
 ///
-/// Holds the decoded `inputArgs` as JSON values; the accessors below are what
-/// the generated dispatch calls, one per supported type.
+/// Holds `inputArgs` as the `(name, value)` pairs [`serve`] selected; the
+/// accessors below are what the generated dispatch calls, one per supported
+/// type.
 pub struct Arguments {
-    entries: json::Value,
+    entries: slice<(string, string)>,
 }
 
 impl Arguments {
-    /// Wrap the `inputArgs` array from `currentFunctionCall`.
-    pub fn new(entries: json::Value) -> Arguments {
+    /// Wrap the `inputArgs` of `currentFunctionCall`, as `(name, value)` pairs.
+    ///
+    /// The value is still encoded: the engine types the field as `JSON`, so
+    /// what arrives is a JSON document *as text*, which
+    /// [`lookup`](Arguments::lookup) decodes once an accessor asks for it.
+    pub fn new(entries: slice<(string, string)>) -> Arguments {
         Arguments { entries }
     }
 
     /// Find an argument's decoded value.
-    ///
-    /// `inputArgs` is a list of `{name, value}` where `value` is itself a JSON
-    /// document encoded as a string, so it is decoded a second time here.
     fn lookup(&self, name: &str) -> Option<json::Value> {
-        let list = self.entries.AsArray()?;
-        for i in 0..list.Len() {
-            let entry = &list[i as usize];
-            let object = match entry.AsObject() {
-                Some(o) => o,
-                None => continue,
-            };
-            let (found, ok) = object.Get("name");
-            if !ok {
+        let mut i: goish::int = 0;
+        while i < self.entries.Len() {
+            let (found, encoded) = &self.entries[i];
+            i += 1;
+            if found != name {
                 continue;
             }
-            match found.AsString() {
-                Some(s) if s == name => {}
-                _ => continue,
-            }
-            let (raw, ok) = object.Get("value");
-            if !ok {
-                return None;
-            }
-            // An absent optional arrives as JSON null rather than being missing.
-            let encoded = raw.AsString()?;
+            // An absent optional arrives as the JSON text `null` rather than
+            // being left out of the list, so this decodes to a null value and
+            // the `_opt` accessors below turn that into `None`.
             let mut decoded = json::Value::Null;
             let err = json::Unmarshal(&goish::bytes(encoded.clone()), &mut decoded);
             if err != nil {
@@ -249,6 +256,44 @@ pub fn encode_object<T: crate::ObjectId>(value: &T) -> Result<string, string> {
     Ok(crate::json_string(&value.to_id()?))
 }
 
+/// The `Void` scalar: a field that returns nothing.
+///
+/// It arrives as JSON null, so decoding accepts whatever it is handed — the
+/// value carries no information, only that the call completed. Codegen emits
+/// its own `Void` for the same reason; this one is here because [`serve`] runs
+/// before `src/gen` is real.
+struct Void;
+
+impl FromJson for Void {
+    fn from_json(_value: &json::Value) -> Result<Void, string> {
+        Ok(Void)
+    }
+}
+
+/// The fields of `FunctionCallArgValue`, for the selection [`serve`] makes.
+///
+/// The one `Fields` namespace written by hand rather than generated; see the
+/// module docs for why registration cannot reach for [`crate::gen`].
+struct ArgValueFields;
+
+impl Fields for ArgValueFields {
+    fn new() -> ArgValueFields {
+        ArgValueFields
+    }
+}
+
+impl ArgValueFields {
+    /// The argument's API name.
+    fn name(&self) -> Leaf<string> {
+        Leaf::new("name")
+    }
+
+    /// Its value, as the JSON document the engine encoded it into.
+    fn value(&self) -> Leaf<string> {
+        Leaf::new("value")
+    }
+}
+
 /// Serve this module: answer the engine's pending function call.
 ///
 /// `T` is the module's root object, declared with `#[dagger::object]`. The macro
@@ -262,15 +307,19 @@ pub fn serve<T: Object>() -> ! {
         )),
     };
 
-    let call = match session.query(&string(
-        "{currentFunctionCall{name,parentName,inputArgs{name,value}}}",
-    )) {
-        Ok(data) => data,
-        Err(message) => fail(message),
-    };
-
-    let parent_name = match field_string(&call, &["currentFunctionCall", "parentName"]) {
-        Ok(name) => name,
+    // The whole call in one round trip. `inputArgs` is a list of objects, so it
+    // is a nested selection rather than a leaf.
+    let call = engine::fetch(
+        &session,
+        &Chain::root().field("currentFunctionCall", string("")),
+        &(
+            Leaf::<string>::new("parentName"),
+            Leaf::<string>::new("name"),
+            ListField::<ArgValueFields>::new("inputArgs").select(|a| (a.name(), a.value())),
+        ),
+    );
+    let (parent_name, name, input_args) = match call {
+        Ok(call) => call,
         Err(message) => fail(message),
     };
 
@@ -279,7 +328,7 @@ pub fn serve<T: Object>() -> ! {
     let result = if parent_name.Len() == 0 {
         register::<T>(&session)
     } else {
-        dispatch::<T>(&session, &call)
+        T::invoke(&name, &Arguments::new(input_args))
     };
 
     match result.and_then(|value| return_value(&session, &value)) {
@@ -292,23 +341,30 @@ pub fn serve<T: Object>() -> ! {
 ///
 /// Build a `TypeDef` for the root object, hang every declared function off it,
 /// attach it to a `Module`, and hand back the module's ID.
-fn register<T: Object>(session: &Session) -> Result<string, string> {
-    let mut object = string("{typeDef{withObject(name:") + json_string(&string(T::NAME)) + "){";
-    let mut closers = string("");
+fn register<T: Object>(transport: &dyn Transport) -> Result<string, string> {
+    let mut args = Args::new();
+    args.put("name", arg_string(T::NAME));
+    let mut object = Chain::root()
+        .field("typeDef", string(""))
+        .field("withObject", args.finish());
 
+    // One `withFunction` per declared function, chained. The response nests
+    // exactly as the chain does, and `Chain::decode` walks it back the same
+    // way, so repeating a field name costs nothing here.
     for def in T::functions() {
-        let function_id = build_function(session, def)?;
-        object = object + "withFunction(function:" + json_string(&function_id) + "){";
-        closers = closers + "}";
+        let function_id = build_function(transport, def)?;
+        let mut args = Args::new();
+        args.put("function", arg_string(function_id));
+        object = object.field("withFunction", args.finish());
     }
+    let type_def_id = fetch_id(transport, &object)?;
 
-    let query = object + "id}" + closers + "}}";
-    let type_def = session.query(&query)?;
-    let type_def_id = nested_id(&type_def, "typeDef", "withObject", T::functions().len())?;
-
-    let module = session
-        .query(&(string("{module{withObject(object:") + json_string(&type_def_id) + "){id}}}"))?;
-    let module_id = field_string(&module, &["module", "withObject", "id"])?;
+    let mut args = Args::new();
+    args.put("object", arg_string(type_def_id));
+    let module = Chain::root()
+        .field("module", string(""))
+        .field("withObject", args.finish());
+    let module_id = fetch_id(transport, &module)?;
 
     // Both paths hand back "a JSON document", so the ID is JSON-encoded here to
     // match what dispatch returns from encode_*. returnValue then embeds it as a
@@ -317,80 +373,60 @@ fn register<T: Object>(session: &Session) -> Result<string, string> {
 }
 
 /// Build one `Function` and return its ID.
-fn build_function(session: &Session, def: &FunctionDef) -> Result<string, string> {
-    let return_type = build_type_def(session, def.return_kind, def.return_object, false)?;
+fn build_function(transport: &dyn Transport, def: &FunctionDef) -> Result<string, string> {
+    let return_type = build_type_def(transport, def.return_kind, def.return_object, false)?;
 
-    let mut query = string("{function(name:")
-        + json_string(&string(def.name))
-        + ",returnType:"
-        + json_string(&return_type)
-        + "){";
-    let mut depth: usize = 0;
+    let mut args = Args::new();
+    args.put("name", arg_string(def.name));
+    args.put("returnType", arg_string(return_type));
+    let mut function = Chain::root().field("function", args.finish());
 
     // What makes `dagger generate` run this function. It takes no arguments:
     // the engine reads the flag off the function, then enforces the rest of the
     // contract — a `Changeset` return, and no required arguments — when the
     // module loads.
     if def.generator {
-        query = query + "withGenerator{";
-        depth += 1;
+        function = function.field("withGenerator", string(""));
     }
 
     if !def.doc.is_empty() {
-        query = query + "withDescription(description:" + json_string(&string(def.doc)) + "){";
-        depth += 1;
+        let mut args = Args::new();
+        args.put("description", arg_string(def.doc));
+        function = function.field("withDescription", args.finish());
     }
 
     // Flags the function for `dagger check`. It takes no arguments — the whole
     // effect is the flag.
     if def.is_check {
-        query = query + "withCheck{";
-        depth += 1;
+        function = function.field("withCheck", string(""));
     }
 
     for arg in def.args {
-        let arg_type = build_type_def(session, arg.kind, arg.object, arg.optional)?;
-        query = query
-            + "withArg(name:"
-            + json_string(&string(arg.name))
-            + ",typeDef:"
-            + json_string(&arg_type);
+        let arg_type = build_type_def(transport, arg.kind, arg.object, arg.optional)?;
+        let mut args = Args::new();
+        args.put("name", arg_string(arg.name));
+        args.put("typeDef", arg_string(arg_type));
         if !arg.doc.is_empty() {
-            query = query + ",description:" + json_string(&string(arg.doc));
+            args.put("description", arg_string(arg.doc));
         }
         if !arg.default_value.is_empty() {
             // defaultValue is a JSON scalar, so the already-encoded JSON is
             // embedded as a GraphQL string.
-            query = query + ",defaultValue:" + json_string(&string(arg.default_value));
+            args.put("defaultValue", arg_string(arg.default_value));
         }
         if !arg.default_path.is_empty() {
-            query = query + ",defaultPath:" + json_string(&string(arg.default_path));
+            args.put("defaultPath", arg_string(arg.default_path));
         }
         if !arg.ignore.is_empty() {
-            query = query + ",ignore:[";
-            let mut first = true;
-            for pattern in arg.ignore {
-                if !first {
-                    query = query + ",";
-                }
-                query = query + json_string(&string(*pattern));
-                first = false;
-            }
-            query = query + "]";
+            args.put("ignore", arg_list(arg.ignore));
         }
         if !arg.deprecated.is_empty() {
-            query = query + ",deprecated:" + json_string(&string(arg.deprecated));
+            args.put("deprecated", arg_string(arg.deprecated));
         }
-        query = query + "){";
-        depth += 1;
+        function = function.field("withArg", args.finish());
     }
 
-    let mut closers = string("");
-    for _ in 0..depth {
-        closers = closers + "}";
-    }
-    let data = session.query(&(query + "id}" + closers + "}"))?;
-    nested_id(&data, "function", "", depth)
+    fetch_id(transport, &function)
 }
 
 /// Build a `TypeDef` of one kind and return its ID.
@@ -399,102 +435,51 @@ fn build_function(session: &Session, def: &FunctionDef) -> Result<string, string
 /// an object is described by name rather than by kind, since the kind alone
 /// would not say which object it is.
 fn build_type_def(
-    session: &Session,
+    transport: &dyn Transport,
     kind: &'static str,
     object: &'static str,
     optional: bool,
 ) -> Result<string, string> {
-    // `kind` is a GraphQL enum literal, so it is spliced unquoted. It only ever
-    // comes from the macro's fixed set, never from user text. An object's name
-    // is a string argument, so it goes through the usual quoting.
-    let (builder, head) = if object.is_empty() {
-        (string("withKind(kind:") + kind + ")", "withKind")
-    } else {
-        (
-            string("withObject(name:") + json_string(&string(object)) + ")",
-            "withObject",
-        )
-    };
+    let mut args = Args::new();
+    let mut type_def = Chain::root().field("typeDef", string(""));
 
-    let query = if optional {
-        string("{typeDef{") + builder + "{withOptional(optional:true){id}}}}"
+    if object.is_empty() {
+        // `kind` is a GraphQL enum literal, so it is spliced unquoted rather
+        // than through `arg_string`. It only ever comes from the macro's fixed
+        // set, never from user text. An object's name is a string argument, so
+        // it goes through the usual quoting.
+        args.put("kind", string(kind));
+        type_def = type_def.field("withKind", args.finish());
     } else {
-        string("{typeDef{") + builder + "{id}}}"
-    };
-    let data = session.query(&query)?;
+        args.put("name", arg_string(object));
+        type_def = type_def.field("withObject", args.finish());
+    }
+
     if optional {
-        field_string(&data, &["typeDef", head, "withOptional", "id"])
-    } else {
-        field_string(&data, &["typeDef", head, "id"])
+        let mut args = Args::new();
+        args.put("optional", string("true"));
+        type_def = type_def.field("withOptional", args.finish());
     }
+
+    fetch_id(transport, &type_def)
 }
 
-/// Walk `depth` repetitions of a chained field down to the `id` it wraps.
+/// Send `chain` and read the `id` of the object it builds.
 ///
-/// Chained builder calls nest in the response exactly as they do in the query,
-/// so `withFunction(...){withFunction(...){id}}` comes back doubly wrapped.
-fn nested_id(
-    data: &json::Value,
-    root: &'static str,
-    repeated: &'static str,
-    depth: usize,
-) -> Result<string, string> {
-    let mut current = if root.is_empty() {
-        data.clone()
-    } else {
-        field(data, &[root])?
-    };
-    if !repeated.is_empty() {
-        current = field(&current, &[repeated])?;
-    }
-    for _ in 0..depth {
-        current = match current.AsObject() {
-            Some(object) => {
-                let mut found = json::Value::Null;
-                // Each level has exactly one field, whatever it was named.
-                let keys = object.Keys();
-                for i in 0..keys.Len() {
-                    let (value, ok) = object.Get(keys[i as usize].clone());
-                    if ok {
-                        found = value;
-                    }
-                }
-                found
-            }
-            None => return Err(string("unexpected shape in the engine response")),
-        };
-    }
-    match current.AsObject() {
-        Some(object) => {
-            let (id, ok) = object.Get("id");
-            if !ok {
-                return Err(string("engine response is missing id"));
-            }
-            match id.AsString() {
-                Some(s) => Ok(s.clone()),
-                None => Err(string("id was not a string")),
-            }
-        }
-        None => match current.AsString() {
-            Some(s) => Ok(s.clone()),
-            None => Err(string("engine response is missing id")),
-        },
-    }
-}
-
-/// Call the requested function and return its JSON-encoded result.
-fn dispatch<T: Object>(session: &Session, call: &json::Value) -> Result<string, string> {
-    let _ = session;
-    let name = field_string(call, &["currentFunctionCall", "name"])?;
-    let input_args = field(call, &["currentFunctionCall", "inputArgs"])?;
-    let args = Arguments::new(input_args);
-    T::invoke(&name, &args)
+/// Every builder above ends the same way: the chain is lazy until an ID is
+/// asked for, and asking is what runs it.
+fn fetch_id(transport: &dyn Transport, chain: &Chain) -> Result<string, string> {
+    engine::fetch(transport, chain, &Leaf::<string>::new("id"))
 }
 
 /// Hand a JSON-encoded result back to the engine.
-fn return_value(session: &Session, value: &string) -> Result<(), string> {
-    session.query(
-        &(string("{currentFunctionCall{returnValue(value:") + json_string(value) + ")}}"),
+fn return_value(transport: &dyn Transport, value: &string) -> Result<(), string> {
+    let mut args = Args::new();
+    args.put("value", arg_string(value.clone()));
+    engine::fetch(
+        transport,
+        &Chain::root().field("currentFunctionCall", string("")),
+        &Leaf::<Void>::with_args("returnValue", args.finish()),
     )?;
     Ok(())
 }

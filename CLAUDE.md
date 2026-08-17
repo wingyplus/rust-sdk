@@ -195,6 +195,18 @@ caches hold source, not objects, and stay shared.
   signature only works *after* `dagger generate`: `src/gen` is a placeholder
   until then, which is why the templates and the two wrappers in
   `sdk/src/objects.rs` stay on scalars and IDs.
+- **`serve()` may not use `src/gen`, only `querybuilder`.** Registration is
+  ordinary API traffic — `typeDef`, `function`, `module` — so `sdk/src/module.rs`
+  builds it with `Chain`/`Args`/`Leaf` and sends it with `engine::fetch`, naming
+  the handful of fields it needs as string literals. Switching it to
+  `dag().type_def()…` is the obvious-looking improvement and it deadlocks the
+  bootstrap: `src/gen` is a placeholder until a module's first
+  `dagger generate`, and the engine has to *load* the module — which runs
+  registration — before generation can enumerate anything. This is the same
+  cycle `initModule` seeds `dagger/` to break, seen from the other side, and
+  it is why `templates/*/src/main.rs.tmpl` takes a `string` rather than a
+  `Directory`. `ArgValueFields` in that file is the one `Fields` namespace
+  written by hand for the same reason.
 - **Generated code may only name what lives outside `src/gen`.** The bindings
   are written against `querybuilder.rs` and `engine.rs`, so anything they need
   — `ToArg`, `arg_string`, `Args`, `arg_list` — belongs there and not in the
