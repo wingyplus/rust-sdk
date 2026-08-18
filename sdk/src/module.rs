@@ -68,8 +68,8 @@ impl SourceMapDef {
 pub struct ArgDef {
     /// API name, camelCased from the Rust parameter.
     pub name: &'static str,
-    /// The engine's TypeDefKind: `STRING_KIND`, `INTEGER_KIND`, `BOOLEAN_KIND`,
-    /// `OBJECT_KIND`.
+    /// The engine's TypeDefKind: `STRING_KIND`, `INTEGER_KIND`, `FLOAT_KIND`,
+    /// `BOOLEAN_KIND`, `OBJECT_KIND`.
     pub kind: &'static str,
     /// For `OBJECT_KIND`, the engine's name for the object — `Directory`,
     /// `Workspace`. Empty for every other kind.
@@ -230,6 +230,30 @@ impl Arguments {
         }
     }
 
+    /// A required float argument.
+    pub fn float(&self, name: &str) -> Result<goish::float64, string> {
+        match self.float_opt(name)? {
+            Some(value) => Ok(value),
+            None => Err(Arguments::missing(name)),
+        }
+    }
+
+    /// An optional float argument.
+    ///
+    /// The same JSON number [`int`](Arguments::int) reads, kept as it arrived:
+    /// the engine's Float is a double, and goish decodes every JSON number to
+    /// one, so this is the accessor that does not narrow.
+    pub fn float_opt(&self, name: &str) -> Result<Option<goish::float64>, string> {
+        match self.lookup(name) {
+            None => Ok(None),
+            Some(value) if value.IsNull() => Ok(None),
+            Some(value) => match value.AsNumber() {
+                Some(n) => Ok(Some(n)),
+                None => Err(Arguments::wrong_type(name, "a number")),
+            },
+        }
+    }
+
     /// A required object argument, as the engine's ID for it.
     ///
     /// An object arrives as its ID — the same opaque string the engine hands
@@ -283,6 +307,17 @@ pub fn encode_string(value: &string) -> string {
 /// JSON-encode an integer result.
 pub fn encode_int(value: goish::int) -> string {
     goish::fmt::Sprintf!("%d", value)
+}
+
+/// JSON-encode a float result.
+///
+/// `'g'` with a precision of -1 is Go's "shortest text that parses back to this
+/// value", which is what keeps a whole number out of exponent form — the same
+/// formatting [`ToArg for float64`](crate::querybuilder::ToArg) renders an
+/// outgoing argument with, so a value makes the same round trip in both
+/// directions.
+pub fn encode_float(value: goish::float64) -> string {
+    goish::strconv::FormatFloat(value, b'g', -1, 64)
 }
 
 /// JSON-encode a boolean result.

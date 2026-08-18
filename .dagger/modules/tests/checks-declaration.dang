@@ -22,8 +22,8 @@ type DeclarationChecks {
   `#[dagger(default = ...)]` should apply when the caller omits the argument,
   and yield to the caller when they do not.
 
-  All three literal shapes are here on purpose: a quoted string, a bare integer
-  and a bare `true` reach the macro as different token trees.
+  All four literal shapes are here on purpose: a quoted string, a bare integer,
+  a bare float and a bare `true` reach the macro as different token trees.
   """
   pub defaultsApply(ws: Workspace!): Void @check {
     let target = harness.modTarget(ws)
@@ -32,10 +32,33 @@ type DeclarationChecks {
     target.assertJsonString(["with-default", "--value", "supplied"], "supplied")
     target.assertJsonOutput(["with-default-int"], "3")
     target.assertJsonOutput(["with-default-int", "--n", "7"], "7")
+    target.assertJsonOutput(["with-default-float"], "1.5")
+    target.assertJsonOutput(["with-default-float", "--factor", "2.5"], "2.5")
     target.assertJsonOutput(["with-default-bool"], "true")
     # `--flag=false`, not `--flag false`: a boolean flag takes its value
     # attached, and the split form makes the CLI read `false` as a subcommand.
     target.assertJsonOutput(["with-default-bool", "--flag=false"], "false")
+  }
+
+  """
+  A float should cross the boundary in both directions, and stay a float.
+
+  The failure this guards against is not a broken call but a changed value:
+  `kind_of` used to have no `FLOAT_KIND` at all, and the two ways to add one
+  badly — declaring `INTEGER_KIND`, or encoding the result with `encode_int` —
+  both leave a function that answers, with the fraction gone. So the assertions
+  are on values a truncating path could not produce.
+
+  `half` is here as well as `floatRoundTrip` because a round trip alone proves
+  less than it looks: the argument the caller spelled could be echoed back
+  through a string and still read as `2.5`. `7` in and `3.5` out is a number the
+  module computed, and it is the encoder that has to render it.
+  """
+  pub floatsCrossTheBoundary(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonOutput(["float-round-trip", "--factor", "2.5"], "2.5")
+    target.assertJsonOutput(["half", "--factor", "7"], "3.5")
   }
 
   """

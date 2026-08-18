@@ -88,8 +88,8 @@ pub use engine::{
     SESSION_TOKEN_ENV,
 };
 pub use module::{
-    encode_bool, encode_int, encode_object, encode_string, encode_void, error_message, serve,
-    ArgDef, Arguments, FunctionDef, Object, SourceMapDef,
+    encode_bool, encode_float, encode_int, encode_object, encode_string, encode_void,
+    error_message, serve, ArgDef, Arguments, FunctionDef, Object, SourceMapDef,
 };
 pub use objects::{Changeset, ObjectId, Workspace};
 pub use querybuilder::{

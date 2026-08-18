@@ -80,6 +80,33 @@ impl FeatureMatrix {
         flag
     }
 
+    /// Return the factor, which defaults to 1.5.
+    #[dagger::function]
+    pub fn with_default_float(&self, #[dagger(default = 1.5)] factor: f64) -> f64 {
+        factor
+    }
+
+    /// Return the number, unchanged.
+    ///
+    /// A float goes out through `encode_float` rather than through
+    /// `encode_int`, and comes back in through the `float` accessor: the two
+    /// are a pair, and a mismatch between them is a value that changes on the
+    /// way through rather than a failure.
+    #[dagger::function]
+    pub fn float_round_trip(&self, factor: f64) -> f64 {
+        factor
+    }
+
+    /// Halve the number.
+    ///
+    /// A float *return* that is not the argument echoed back, so the encoding
+    /// is shown on a value the caller did not spell: `7 / 2` is `3.5`, which an
+    /// integer encoder would render as `3`.
+    #[dagger::function]
+    pub fn half(&self, factor: f64) -> f64 {
+        factor / 2.0
+    }
+
     /// Report whether a value was supplied.
     #[dagger::function]
     pub fn optional_arg(&self, value: Option<string>) -> string {
