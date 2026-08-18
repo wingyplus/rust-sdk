@@ -112,4 +112,35 @@ type ObjectChecks {
       "a Result<Container, string> should resolve to an id the CLI can chain from",
     )
   }
+
+  """
+  A function returning `Option<Container>` should hand back a chainable object
+  or a null.
+
+  The absent half is the interesting one, and it is why the dispatch matches on
+  the `Option` rather than mapping over it: resolving a returned object's id is
+  a round trip, so a `None` that reached `encode_object` anyway would either
+  fail the call or quietly resolve something the function never returned.
+  Nothing about a present `Container` shows that, since resolving one is what it
+  is supposed to do.
+
+  The null is asserted without chaining. `dagger call optional-container` on its
+  own ends at the object, which the CLI prints as an id or as `null`; chaining
+  `stdout` off nothing would assert GraphQL's null propagation rather than this
+  SDK's encoding.
+  """
+  pub returnsAnOptionalContainer(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonString(
+      ["optional-container", "--present=true", "stdout"],
+      "optional-container",
+      "a Some should resolve to an id the CLI can chain from",
+    )
+    target.assertJsonOutput(
+      ["optional-container"],
+      "null",
+      "a None should be a null rather than a resolved id or a failure",
+    )
+  }
 }

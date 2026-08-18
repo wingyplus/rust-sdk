@@ -134,6 +134,91 @@ impl FeatureMatrix {
         }
     }
 
+    /// Return a value, or nothing at all.
+    ///
+    /// The other side of `optional_arg`: an `Option<T>` in return position is
+    /// declared optional to the engine, and a `None` reaches the caller as JSON
+    /// null rather than as a failure. That distinction is the whole point —
+    /// "there is no value" and "the call did not work" are different answers,
+    /// and `dagger::fail` can only give the second.
+    #[dagger::function]
+    pub fn optional_string(&self, #[dagger(default = false)] present: bool) -> Option<string> {
+        if present {
+            Some(string("present"))
+        } else {
+            None
+        }
+    }
+
+    /// Return a number, or nothing at all.
+    #[dagger::function]
+    pub fn optional_int(&self, #[dagger(default = false)] present: bool) -> Option<int> {
+        if present {
+            Some(7)
+        } else {
+            None
+        }
+    }
+
+    /// Return `false`, or nothing at all.
+    ///
+    /// `Some(false)` rather than `Some(true)` on purpose: `false` and `null` are
+    /// the two answers a Boolean return can confuse, and an encoder that dropped
+    /// the `Option` would make them the same one.
+    #[dagger::function]
+    pub fn optional_bool(&self, #[dagger(default = false)] present: bool) -> Option<bool> {
+        if present {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// Return a container, or nothing at all.
+    ///
+    /// The absent half costs no round trip, and that is the assertion: resolving
+    /// an object's id is a query, so a `None` that reached `encode_object`
+    /// anyway would either fail or quietly resolve something.
+    #[dagger::function]
+    pub fn optional_container(
+        &self,
+        #[dagger(default = false)] present: bool,
+    ) -> Option<gen::Container> {
+        if !present {
+            return None;
+        }
+
+        Some(
+            dag()
+                .container()
+                .from("alpine:3.22")
+                .with_exec(&["echo", "-n", "optional-container"]),
+        )
+    }
+
+    /// Return a value fallibly, and optionally.
+    ///
+    /// Both unwrappings in one signature, and they compose in one direction
+    /// only: the dispatch runs the `?` first and matches on what it yields, so
+    /// the `Option` it reads is the one inside the `Ok`.
+    #[dagger::function]
+    pub fn try_optional_string(
+        &self,
+        #[dagger(default = false)] present: bool,
+    ) -> Result<Option<string>, string> {
+        if !present {
+            return Ok(None);
+        }
+
+        Ok(Some(
+            dag()
+                .container()
+                .from("alpine:3.22")
+                .with_exec(&["echo", "-n", "try-optional"])
+                .stdout()?,
+        ))
+    }
+
     /// Return the value.
     #[dagger::function]
     pub fn documented(

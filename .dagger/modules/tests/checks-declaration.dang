@@ -293,6 +293,55 @@ type DeclarationChecks {
   }
 
   """
+  A function returning `Option<T>` should hand back a value or a null, and
+  neither should be a failure.
+
+  `optionalArgumentsMayBeOmitted` above is the same type in the other position,
+  and the two are declared by the same `Option<T>` — but only the return half
+  has an encoding to get wrong. A `None` is written as JSON null, and the return
+  typedef carries `withOptional`, so the two have to agree: a return declared
+  non-optional that encoded `null` fails the call, and a return declared
+  optional whose encoder wrote a value would be a nullable field that is never
+  null.
+
+  The Boolean pair is the one that would go unnoticed otherwise. `null` and
+  `false` are both falsey to a caller, so a dispatch that dropped the `Option`
+  and encoded `Some(false)` and `None` alike would still look plausible; the
+  function returns `Some(false)` on purpose so the two answers have to differ.
+
+  The last pair is a fallible optional, which is where the `?` and the `Option`
+  meet: the dispatch runs the `?` first and matches on what it yields, and
+  getting that order wrong matches on a `Result`.
+  """
+  pub optionalReturnsMayBeAbsent(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonString(["optional-string", "--present=true"], "present")
+    target.assertJsonOutput(
+      ["optional-string"],
+      "null",
+      "a None should reach the caller as JSON null rather than as a failure",
+    )
+
+    target.assertJsonOutput(["optional-int", "--present=true"], "7")
+    target.assertJsonOutput(["optional-int"], "null")
+
+    target.assertJsonOutput(
+      ["optional-bool", "--present=true"],
+      "false",
+      "Some(false) and None are different answers, and both are falsey",
+    )
+    target.assertJsonOutput(["optional-bool"], "null")
+
+    target.assertJsonString(["try-optional-string", "--present=true"], "try-optional")
+    target.assertJsonOutput(
+      ["try-optional-string"],
+      "null",
+      "a Result<Option<T>, string> should be able to succeed with nothing",
+    )
+  }
+
+  """
   An enum's name, its members and their doc comments should reach the schema.
 
   The type is `FeatureMatrixTargetOs` rather than `TargetOs` because the engine
