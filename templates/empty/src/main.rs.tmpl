@@ -6,6 +6,11 @@
 /// A generated module for {{ .ModuleType }} functions.
 pub struct {{ .ModuleType }};
 
+// The `///` below is the module description: `dagger functions` and
+// `dagger call --help` show it. It has to sit on the `impl` block, because
+// that is the item `#[dagger::object]` is handed — the one on the struct
+// above is only for `cargo doc`.
+/// A generated module for {{ .ModuleType }} functions.
 #[dagger::object]
 impl {{ .ModuleType }} {}
 

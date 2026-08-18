@@ -45,6 +45,13 @@ use goish::{errors, fmt, int, slice, string, strings};
 /// A module exercising the whole Rust SDK surface.
 pub struct FeatureMatrix;
 
+/// Every Rust SDK feature the end-to-end suite asserts on.
+///
+/// This comment is the assertion: the macro reads the `///` on the annotated
+/// `impl` block and registers it as the object's description *and* the
+/// module's. It deliberately does not repeat the struct's doc above, so a
+/// check that finds this text has found the block's comment rather than
+/// whatever else happened to be lying around.
 #[dagger::object]
 impl FeatureMatrix {
     // ---------------------------------------------------------------- declaration
@@ -98,6 +105,17 @@ impl FeatureMatrix {
         #[dagger(deprecated = "use documented instead")] value: Option<string>,
     ) -> string {
         value.unwrap_or_else(|| string("unset"))
+    }
+
+    /// Return a fixed value, from a function nobody should call any more.
+    ///
+    /// The function-level twin of `deprecated_arg` above. The engine takes a
+    /// reason on either, but the two are spelled differently because a method
+    /// has no `#[dagger(...)]` of its own: a function's goes in the marker
+    /// attribute, next to `generate`.
+    #[dagger::function(deprecated = "use echo instead")]
+    pub fn deprecated_function(&self) -> string {
+        string("deprecated-function")
     }
 
     /// Fail on purpose.

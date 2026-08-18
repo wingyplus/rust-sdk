@@ -12,7 +12,8 @@ is here is the half of the SDK that is Rust, and that nothing else reaches:
   `sdk/macros`'s own suite is ordinary `#[test]` functions that can only see the
   half of the crate speaking in `String`; anything touching a `TokenTree` is
   untestable there, because the `proc_macro` API panics outside a macro
-  expansion. So `default`, `doc`, `deprecated`, `default_path`, `ignore`,
+  expansion. So `default`, `doc`, `deprecated` on an argument and on a function,
+  the `impl` block's own doc comment, source maps, `default_path`, `ignore`,
   `Option<T>`, a Void return, object arguments and returns, `#[dagger::check]`
   and `#[dagger::function(generate)]` are checked by compiling a module that
   uses them and calling it.

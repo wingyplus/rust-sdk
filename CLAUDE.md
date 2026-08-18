@@ -225,6 +225,14 @@ caches hold source, not objects, and stay shared.
   so no schema name can reach them. `withExec` really does have an argument
   named `args`, and the obvious spelling silently passed the half-built argument
   list to `arg_list` instead of the caller's command.
+- **The object's description is the doc comment on the `impl`, not on the
+  `struct`.** `#[dagger::object]` is handed the block it annotates and nothing
+  else, so a `///` on the type declaration — or the crate's `//!` — is invisible
+  to it. That doc is also the *module's* description, since a Rust module's root
+  type is the module and there is nothing else an attribute macro on an `impl`
+  can read. Both templates carry the comment in the right place with a note
+  saying why; moving it back onto the struct is silent, and leaves a module with
+  no description at all.
 - **The engine owns module config.** `initModule` must not write `dagger.json`
   or `dagger-module.toml`; it returns only SDK-owned files. The engine merges in
   its own bookkeeping.

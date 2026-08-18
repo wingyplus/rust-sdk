@@ -24,11 +24,45 @@
 //! [`querybuilder`]: crate::querybuilder
 
 use goish::encoding::json;
-use goish::{nil, os, slice, string};
+use goish::{int, nil, os, slice, strconv, string};
 
 use crate::engine::{self, Session, Transport};
 use crate::querybuilder::{arg_list, arg_string, Args, Chain, Fields, FromJson, Leaf, ListField};
 use crate::{fail, json_string};
+
+/// Where a declaration was written, so an engine-side error about it can point
+/// at the source rather than at a name.
+///
+/// The file is what `proc_macro::Span::file()` reports, which for a module
+/// cargo builds from its own root is already the path the engine wants —
+/// `src/main.rs`, relative to the module's source directory. Line and column
+/// are one-indexed, as the engine's are.
+///
+/// [`UNKNOWN`](SourceMapDef::UNKNOWN) is the absent case: a declaration the
+/// macro had no span for registers with no source map at all, rather than with
+/// one pointing at line zero of nothing.
+pub struct SourceMapDef {
+    /// Path of the source file, relative to the module's source root.
+    pub file: &'static str,
+    /// One-indexed line.
+    pub line: int,
+    /// One-indexed column.
+    pub column: int,
+}
+
+impl SourceMapDef {
+    /// No location known: nothing is sent to the engine for this declaration.
+    pub const UNKNOWN: SourceMapDef = SourceMapDef {
+        file: "",
+        line: 0,
+        column: 0,
+    };
+
+    /// Whether there is a location to send.
+    fn is_known(&self) -> bool {
+        !self.file.is_empty()
+    }
+}
 
 /// One argument of an exported function.
 pub struct ArgDef {
@@ -52,6 +86,8 @@ pub struct ArgDef {
     pub ignore: &'static [&'static str],
     /// From `#[dagger(deprecated = "...")]`. Empty when unset.
     pub deprecated: &'static str,
+    /// Where the parameter was written.
+    pub source: SourceMapDef,
 }
 
 /// One exported function.
@@ -70,6 +106,13 @@ pub struct FunctionDef {
     /// From `#[dagger::function(generate)]`: this function is a generator, so
     /// `dagger generate` runs it and applies the `Changeset` it returns.
     pub generator: bool,
+    /// From `#[dagger::function(deprecated = "...")]`. Empty when unset.
+    ///
+    /// The same option an argument carries in `#[dagger(deprecated = "...")]`,
+    /// one level up: the engine takes a reason on either.
+    pub deprecated: &'static str,
+    /// Where the method was written.
+    pub source: SourceMapDef,
     pub args: &'static [ArgDef],
 }
 
@@ -77,6 +120,16 @@ pub struct FunctionDef {
 pub trait Object {
     /// The object name the engine knows this module by.
     const NAME: &'static str;
+
+    /// The `///` doc comment on the annotated `impl` block.
+    ///
+    /// It describes both the object and the module: a Rust module's root type
+    /// is the module, and the crate's own `//!` doc is out of reach of an
+    /// attribute macro on an `impl`. Empty when the block carried none.
+    const DOC: &'static str;
+
+    /// Where the annotated `impl` block's type name was written.
+    const SOURCE: SourceMapDef;
 
     /// Everything the module exposes.
     fn functions() -> &'static [FunctionDef];
@@ -363,6 +416,15 @@ pub fn serve<T: Object>() -> ! {
 fn register<T: Object>(transport: &dyn Transport) -> Result<string, string> {
     let mut args = Args::new();
     args.put("name", arg_string(T::NAME));
+    // A description is a string like any other, so it is quoted; `kind` in
+    // `build_type_def` is the one thing here that is not.
+    if !T::DOC.is_empty() {
+        args.put("description", arg_string(T::DOC));
+    }
+    if T::SOURCE.is_known() {
+        let source_map = build_source_map(transport, &T::SOURCE)?;
+        args.put("sourceMap", arg_string(source_map));
+    }
     let mut object = Chain::root()
         .field("typeDef", string(""))
         .field("withObject", args.finish());
@@ -380,9 +442,16 @@ fn register<T: Object>(transport: &dyn Transport) -> Result<string, string> {
 
     let mut args = Args::new();
     args.put("object", arg_string(type_def_id));
-    let module = Chain::root()
-        .field("module", string(""))
-        .field("withObject", args.finish());
+    let mut module = Chain::root().field("module", string(""));
+    // The root object's doc is the module's description too. Rust has nothing
+    // else to offer: the crate's `//!` doc belongs to the file, and an
+    // attribute macro on an `impl` block cannot see it.
+    if !T::DOC.is_empty() {
+        let mut description = Args::new();
+        description.put("description", arg_string(T::DOC));
+        module = module.field("withDescription", description.finish());
+    }
+    let module = module.field("withObject", args.finish());
     let module_id = fetch_id(transport, &module)?;
 
     // Both paths hand back "a JSON document", so the ID is JSON-encoded here to
@@ -414,6 +483,22 @@ fn build_function(transport: &dyn Transport, def: &FunctionDef) -> Result<string
         function = function.field("withDescription", args.finish());
     }
 
+    // The engine takes a deprecation on a function as readily as on one of its
+    // arguments; the argument's goes in `withArg` below, the function's is a
+    // field of its own.
+    if !def.deprecated.is_empty() {
+        let mut args = Args::new();
+        args.put("reason", arg_string(def.deprecated));
+        function = function.field("withDeprecated", args.finish());
+    }
+
+    if def.source.is_known() {
+        let source_map = build_source_map(transport, &def.source)?;
+        let mut args = Args::new();
+        args.put("sourceMap", arg_string(source_map));
+        function = function.field("withSourceMap", args.finish());
+    }
+
     // Flags the function for `dagger check`. It takes no arguments — the whole
     // effect is the flag.
     if def.is_check {
@@ -442,10 +527,29 @@ fn build_function(transport: &dyn Transport, def: &FunctionDef) -> Result<string
         if !arg.deprecated.is_empty() {
             args.put("deprecated", arg_string(arg.deprecated));
         }
+        if arg.source.is_known() {
+            let source_map = build_source_map(transport, &arg.source)?;
+            args.put("sourceMap", arg_string(source_map));
+        }
         function = function.field("withArg", args.finish());
     }
 
     fetch_id(transport, &function)
+}
+
+/// Build one `SourceMap` and return its ID.
+///
+/// `line` and `column` are Int arguments, so they are spliced as bare decimal
+/// literals rather than through [`arg_string`] — the same distinction
+/// [`build_type_def`] makes for `kind`. They come from a `proc_macro::Span`,
+/// never from user text.
+fn build_source_map(transport: &dyn Transport, def: &SourceMapDef) -> Result<string, string> {
+    let mut args = Args::new();
+    args.put("filename", arg_string(def.file));
+    args.put("line", strconv::Itoa(def.line));
+    args.put("column", strconv::Itoa(def.column));
+
+    fetch_id(transport, &Chain::root().field("sourceMap", args.finish()))
 }
 
 /// Build a `TypeDef` of one kind and return its ID.

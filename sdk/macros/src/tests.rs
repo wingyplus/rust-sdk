@@ -18,15 +18,22 @@
 //! tokens. What is in reach is the type mapping, which is where a signature
 //! turns into a `FunctionDef`.
 
-use crate::parse::{Function, Param};
-use crate::{camel_case, dispatch_arm, function_def, kind_of};
+use crate::parse::{Function, ImplBlock, Param, SourceLoc};
+use crate::{
+    camel_case, dispatch_arm, function_def, function_def_with, kind_of, object_impl,
+    source_map_def, FunctionOptions,
+};
 
 /// A parameter with no `#[dagger(...)]` options.
+///
+/// Its source location is `unknown`: a `Span` is what carries one, and touching
+/// the `proc_macro` API from a test binary panics.
 fn param(name: &str, ty: &str) -> Param {
     Param {
         name: name.to_string(),
         ty: ty.to_string(),
         attrs: Vec::new(),
+        source: SourceLoc::unknown(),
     }
 }
 
@@ -35,6 +42,7 @@ fn function(name: &str, params: Vec<Param>, return_ty: &str) -> Function {
     Function {
         name: name.to_string(),
         doc: String::new(),
+        source: SourceLoc::unknown(),
         params,
         return_ty: return_ty.to_string(),
         takes_self: true,
@@ -277,6 +285,130 @@ fn a_fallible_optional_return_is_refused_too() {
     assert!(
         message.contains("optional return is not supported") && message.contains("return `string`"),
         "says why, and what to return instead: {message}"
+    );
+}
+
+/// `#[dagger::function(deprecated = "...")]` becomes a reason on the function
+/// itself, the same option a parameter carries one level down.
+///
+/// The reason is read off a `TokenTree`, which is out of reach here, so the
+/// options are handed to the renderer directly — the seam `function_def_with`
+/// exists for.
+#[test]
+fn a_deprecated_function_declares_its_reason() {
+    let f = function("old_way", Vec::new(), "string");
+
+    let options = FunctionOptions {
+        generate: false,
+        deprecated: "use newWay instead".to_string(),
+    };
+    let def = function_def_with(&f, &options).expect("a deprecated function is supported");
+    assert!(
+        def.contains(r#"deprecated: "use newWay instead""#),
+        "carries the reason: {def}"
+    );
+
+    // Without the option the field is still emitted, and empty: `register`
+    // reads "not deprecated" off the emptiness rather than off an Option.
+    let plain = function_def(&f).expect("an ordinary function is supported");
+    assert!(
+        plain.contains(r#"deprecated: """#),
+        "an undeprecated function declares no reason: {plain}"
+    );
+}
+
+/// A source location becomes a `SourceMapDef`, and the absence of one becomes
+/// `UNKNOWN` rather than a literal pointing at line zero.
+#[test]
+fn a_source_location_becomes_a_source_map() {
+    let known = SourceLoc {
+        file: "src/main.rs".to_string(),
+        line: 42,
+        column: 9,
+    };
+    assert_eq!(
+        source_map_def(&known),
+        r#"::dagger::SourceMapDef { file: "src/main.rs", line: 42, column: 9 }"#
+    );
+    assert_eq!(
+        source_map_def(&SourceLoc::unknown()),
+        "::dagger::SourceMapDef::UNKNOWN"
+    );
+}
+
+/// A function and its arguments each declare where they were written.
+#[test]
+fn a_function_and_its_arguments_carry_their_source() {
+    let mut f = function("build", vec![param("target", "string")], "string");
+    f.source = SourceLoc {
+        file: "src/main.rs".to_string(),
+        line: 12,
+        column: 5,
+    };
+    f.params[0].source = SourceLoc {
+        file: "src/main.rs".to_string(),
+        line: 13,
+        column: 9,
+    };
+
+    let def = function_def(&f).expect("a located function is supported");
+    assert!(
+        def.contains(r#"source: ::dagger::SourceMapDef { file: "src/main.rs", line: 12, column: 5 }"#),
+        "the function's own location: {def}"
+    );
+    assert!(
+        def.contains(r#"source: ::dagger::SourceMapDef { file: "src/main.rs", line: 13, column: 9 }"#),
+        "the argument's location: {def}"
+    );
+}
+
+/// The `impl` block's doc comment becomes `Object::DOC`, which is both the
+/// object's description and the module's.
+#[test]
+fn the_impl_doc_becomes_the_object_doc() {
+    let block = ImplBlock {
+        type_name: "Build".to_string(),
+        doc: "Builds the project.".to_string(),
+        source: SourceLoc {
+            file: "src/main.rs".to_string(),
+            line: 7,
+            column: 6,
+        },
+        functions: Vec::new(),
+    };
+
+    let generated = object_impl(&block).expect("an empty impl block is supported");
+    assert!(
+        generated.contains(r#"const DOC: &'static str = "Builds the project.";"#),
+        "the doc comment reaches the object: {generated}"
+    );
+    assert!(
+        generated.contains(
+            r#"const SOURCE: ::dagger::SourceMapDef = ::dagger::SourceMapDef { file: "src/main.rs", line: 7, column: 6 };"#
+        ),
+        "the type name's location reaches the object: {generated}"
+    );
+}
+
+/// An undocumented block still declares a `DOC`, empty — `register` sends no
+/// description rather than an empty one.
+#[test]
+fn an_undocumented_impl_declares_an_empty_doc() {
+    let block = ImplBlock {
+        type_name: "Build".to_string(),
+        doc: String::new(),
+        source: SourceLoc::unknown(),
+        functions: Vec::new(),
+    };
+
+    let generated = object_impl(&block).expect("an undocumented impl block is supported");
+    assert!(
+        generated.contains(r#"const DOC: &'static str = "";"#),
+        "no description: {generated}"
+    );
+    assert!(
+        generated.contains("const SOURCE: ::dagger::SourceMapDef = ::dagger::SourceMapDef::UNKNOWN;"),
+        "no source map: {generated}"
     );
 }
 
