@@ -19,9 +19,9 @@ What is here is what only a Rust module can show:
 
 | group | covers | why nothing else reaches it |
 | --- | --- | --- |
-| `declaration` | `default`, `doc`, `deprecated` on an argument and on a function, the `impl` block's own doc comment, source maps, `Option<T>`, lists in and out (including an empty one and an optional one), Void returns, fallible returns in both error types, failure propagation and the message that comes with it | `sdk/macros` is a proc-macro crate; the `proc_macro` API panics outside a macro expansion, so its own tests build `Function` values by hand and never parse a signature |
+| `declaration` | `default`, `doc`, `deprecated` on an argument and on a function, the `impl` block's own doc comment, source maps, `Option<T>`, lists in and out (including an empty one and an optional one), Void returns, fallible returns in both error types, enums the module declares, failure propagation and the message that comes with it | `sdk/macros` is a proc-macro crate; the `proc_macro` API panics outside a macro expansion, so its own tests build `Function` values by hand and never parse a signature |
 | `objects` | `Directory` in, a list of them in, `Container` out, `default_path`, `ignore` | an object crosses the boundary as an engine ID, and nothing until now called `ObjectId::from_id`/`to_id` against a real engine |
-| `client` | leaves, scalar lists, **object lists**, enums, opts structs, `fetch`, nested `select`, chaining | `sdk/codegen`'s suite asserts on emitted *text* against a miniature schema |
+| `client` | leaves, scalar lists, **object lists**, the schema's enums, opts structs, `fetch`, nested `select`, chaining | `sdk/codegen`'s suite asserts on emitted *text* against a miniature schema |
 | `verbs` | `dagger check` and `dagger generate` discovering a Rust module | — |
 
 Two things come free with the fixture merely building: the whole generated

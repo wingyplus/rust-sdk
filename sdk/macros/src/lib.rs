@@ -27,7 +27,9 @@
 //! optional by construction.
 //!
 //! [`macro@check`] marks a function `dagger check` should run, the Go SDK's
-//! `+check` pragma.
+//! `+check` pragma. [`macro@enum_type`] declares an enum the module defines,
+//! which `#[dagger::object(enums(...))]` then names — the Go SDK's type with
+//! string constants, the TypeScript SDK's `@enumType()`.
 //!
 //! What a function *is* otherwise goes in the marker attribute —
 //! `#[dagger::function(generate)]` declares a generator and
@@ -306,6 +308,25 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// last segment of the path, so `gen::Directory` and `Directory` are the same
 /// declaration.
 ///
+/// And the enums the module itself declares, which is what `enums(...)` on this
+/// attribute is for:
+///
+/// ```ignore
+/// #[dagger::enum_type]
+/// pub enum TargetOs { Alpine, Debian }
+///
+/// #[dagger::object(enums(TargetOs))]
+/// impl Build {
+///     #[dagger::function]
+///     pub fn image(&self, os: TargetOs) -> TargetOs { os }
+/// }
+/// ```
+///
+/// A type name in a signature is an engine object *unless* that list says
+/// otherwise: the macro has no schema to look a name up in and sees one item at
+/// a time, so nothing but the list connects an enum's declaration to the module
+/// that serves it. See [`macro@enum_type`].
+///
 /// ```ignore
 /// /// Build the sources in `src`.
 /// #[dagger::function]
@@ -330,10 +351,75 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// [`ObjectId::from_id`]: ../dagger/trait.ObjectId.html#tymethod.from_id
 #[proc_macro_attribute]
-pub fn object(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    match expand(item.clone()) {
+pub fn object(attr: TokenStream, item: TokenStream) -> TokenStream {
+    match expand(attr, item.clone()) {
         Ok(generated) => {
             let mut out = strip_markers(item);
+            out.extend(generated);
+            out
+        }
+        Err(message) => compile_error(&message),
+    }
+}
+
+/// Declare an enum the module defines, so a function may take and return it.
+///
+/// The Go SDK recovers an enum from a type with string constants and the
+/// TypeScript SDK from `@enumType()`; Rust has an enum of its own, and its
+/// variants — with their doc comments — are exactly what the engine wants, so
+/// this reads them off the declaration.
+///
+/// ```ignore
+/// /// The operating system a build targets.
+/// #[dagger::enum_type]
+/// pub enum TargetOs {
+///     /// Alpine Linux.
+///     Alpine,
+///     /// Debian.
+///     Debian,
+/// }
+///
+/// #[dagger::object(enums(TargetOs))]
+/// impl Build {
+///     /// Build for one OS.
+///     #[dagger::function]
+///     pub fn image(&self, os: TargetOs) -> TargetOs {
+///         os
+///     }
+/// }
+/// ```
+///
+/// # It has to be named twice
+///
+/// Once here, and once in [`macro@object`]'s `enums(...)` list. Rust has no
+/// runtime reflection and a macro sees one item at a time, so an attribute on
+/// the enum cannot make the enum known to the `serve::<T>()` that registers the
+/// module — nothing links the two but the list. Forgetting it is a compile
+/// error rather than a module that misbehaves: a type named in a signature and
+/// not in that list is registered as an engine *object*, and the check that it
+/// is one is `dagger::ObjectId`, which no enum implements.
+///
+/// # Spelling
+///
+/// The member the engine publishes is its own SCREAMING_SNAKE_CASE of the
+/// variant name — `AlpineLinux` is called as `ALPINE_LINUX` — and the engine
+/// derives that itself. What crosses the call boundary is the variant name as
+/// written here, in both directions, so a module never spells a member two
+/// ways.
+///
+/// The type's `///` doc comment becomes the enum's description and each
+/// variant's becomes that member's.
+///
+/// # What is not an enum here
+///
+/// A variant that carries data — `Tagged(string)` — or a discriminant is a
+/// compile error naming it: an engine enum is a set of member names, so there
+/// is nowhere for either to go.
+#[proc_macro_attribute]
+pub fn enum_type(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    match expand_enum(item.clone()) {
+        Ok(generated) => {
+            let mut out = item;
             out.extend(generated);
             out
         }
@@ -390,6 +476,138 @@ fn is_dagger_attr(stream: TokenStream) -> bool {
         }
     }
     matches!(path.as_str(), "dagger" | "dagger::function" | "dagger::check")
+}
+
+/// Build the `EnumType` impl for the annotated enum.
+fn expand_enum(item: TokenStream) -> Result<TokenStream, String> {
+    let declared = parse::parse_enum(item)?;
+
+    enum_impl(&declared)
+        .parse()
+        .map_err(|e| format!("generated code did not parse: {e}"))
+}
+
+/// Render the `EnumType` impl for one declared enum.
+fn enum_impl(declared: &parse::Enum) -> String {
+    let mut members = String::new();
+    let mut writes = String::new();
+    let mut reads = String::new();
+    for variant in &declared.variants {
+        members.push_str(&format!(
+            "::dagger::EnumMemberDef {{ name: {name}, doc: {doc} }},",
+            name = quote_str(&variant.name),
+            doc = quote_str(&variant.doc),
+        ));
+        writes.push_str(&format!(
+            "{ty}::{variant} => {name},",
+            ty = declared.name,
+            variant = variant.name,
+            name = quote_str(&variant.name),
+        ));
+        // An if/else chain rather than a `match`, for the same reason the
+        // function dispatch is one: the name is a goish `string`, which compares
+        // against a literal with `==` but cannot be a match scrutinee.
+        reads.push_str(&format!(
+            "if name == {name} {{ return ::core::result::Result::Ok({ty}::{variant}); }}",
+            name = quote_str(&variant.name),
+            ty = declared.name,
+            variant = variant.name,
+        ));
+    }
+
+    format!(
+        r#"
+impl ::dagger::EnumType for {ty} {{
+    const DEF: ::dagger::EnumDef = ::dagger::EnumDef {{
+        name: {name},
+        doc: {doc},
+        members: &[{members}],
+    }};
+
+    fn member(&self) -> &'static str {{
+        match self {{ {writes} }}
+    }}
+
+    fn from_member(
+        name: &::goish::gostring::string,
+    ) -> ::core::result::Result<{ty}, ::goish::gostring::string> {{
+        {reads}
+        ::core::result::Result::Err(
+            ::goish::convert::string("not a member of {ty}: ") + name.clone(),
+        )
+    }}
+}}
+"#,
+        ty = declared.name,
+        name = quote_str(&declared.name),
+        doc = quote_str(&declared.doc),
+        members = members,
+        writes = writes,
+        reads = reads,
+    )
+}
+
+/// The enums a module declares, as `#[dagger::object(enums(...))]` named them.
+///
+/// This is the whole of what tells a signature's `TargetOs` from a `Directory`:
+/// the macro has no schema and no reflection, so a type name is an engine
+/// object unless the module said otherwise here.
+#[derive(Default)]
+struct Enums {
+    /// The paths as the attribute spelled them, in the order it listed them.
+    paths: Vec<String>,
+}
+
+impl Enums {
+    /// Whether a type named in a signature is one of them.
+    ///
+    /// Matched on the last path segment, the way an object's name is: how the
+    /// attribute and the signature each spell the path is the user's business,
+    /// and `crate::TargetOs` and `TargetOs` are one type.
+    fn declares(&self, ty: &str) -> bool {
+        self.paths.iter().any(|p| last_segment(p) == last_segment(ty))
+    }
+}
+
+/// Read the `enums(...)` list off `#[dagger::object(...)]`.
+fn enums_of(attr: TokenStream) -> Result<Enums, String> {
+    let tokens: Vec<TokenTree> = attr.into_iter().collect();
+    let mut enums = Enums::default();
+
+    for part in split_commas(&tokens) {
+        let key = match part.first() {
+            Some(TokenTree::Ident(id)) if part.len() == 2 => id.to_string(),
+            _ => {
+                return Err(format!(
+                    "unrecognized option `{}` on #[dagger::object]; it accepts `enums(...)`",
+                    render(&part)
+                ))
+            }
+        };
+        let listed = match (&key[..], &part[1]) {
+            ("enums", TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
+                g.stream().into_iter().collect::<Vec<TokenTree>>()
+            }
+            _ => {
+                return Err(format!(
+                    "unrecognized option `{}` on #[dagger::object]; it accepts `enums(...)`",
+                    render(&part)
+                ))
+            }
+        };
+
+        for listed in split_commas(&listed) {
+            let path = render(&listed);
+            if !is_object_name(&path) {
+                return Err(format!(
+                    "`{path}` in `enums(...)` is not a type name; list the enums the module declares with `#[dagger::enum_type]`"
+                ));
+            }
+            enums.paths.push(path);
+        }
+    }
+
+    Ok(enums)
 }
 
 /// Options read from the marker attribute itself, `#[dagger::function(...)]`.
@@ -550,15 +768,28 @@ fn json_string(value: &str) -> String {
 /// the only place an `Option` may appear — see [`kind_of`].
 struct Kind {
     kind: &'static str,
-    /// The engine's name for an `OBJECT_KIND`; empty for a scalar. Owned rather
-    /// than `&'static str` because it comes from the signature: any object the
-    /// engine knows can be named, so the set is the schema's, not this crate's.
-    object: String,
+    /// The engine's name for an `OBJECT_KIND` or an `ENUM_KIND`; empty for a
+    /// scalar. Owned rather than `&'static str` because it comes from the
+    /// signature: any object the engine knows can be named, and an enum's name
+    /// is the module's own, so the set is neither fixed nor this crate's.
+    type_name: String,
     optional: bool,
     /// Whether the value is a list of `kind`, from a `slice<T>` or a `Vec<T>`.
     list: bool,
     /// The accessor on `Arguments` that yields this type.
     getter: &'static str,
+}
+
+impl Kind {
+    /// Whether this is the engine object called `name`.
+    ///
+    /// The kind is part of the question rather than the name alone: an enum a
+    /// module declares is named from the same namespace, so a module with an
+    /// enum called `Workspace` would otherwise satisfy the rules below about
+    /// the engine object of that name.
+    fn is_object(&self, name: &str) -> bool {
+        self.kind == "OBJECT_KIND" && self.type_name == name
+    }
 }
 
 /// Strip one `Option<...>` layer, returning the type it wrapped.
@@ -698,14 +929,18 @@ fn is_object_name(ty: &str) -> bool {
 
 /// Map a Rust type to a TypeDefKind.
 ///
-/// Scalars are a fixed set; everything else that looks like a type name is an
-/// engine object, named to the engine exactly as the last segment of the path
-/// spells it. That is as far as this can check: the object's *existence* is the
-/// engine's to know, and a name it does not have is reported when the module
-/// registers. What the name has to satisfy here is that a type of that name
-/// implements [`ObjectId`], which the generated bindings do for every object
-/// the engine has a loader for — so a misspelled or unsupported one fails to
-/// compile, naming the trait.
+/// Scalars are a fixed set. Everything else that looks like a type name is an
+/// engine object — unless the module declared an enum of that name, which is
+/// what `enums` carries, since nothing about the two spellings differs. Either
+/// way it is named to the engine exactly as the last segment of the path spells
+/// it.
+///
+/// That is as far as this can check an object: its *existence* is the engine's
+/// to know, and a name it does not have is reported when the module registers.
+/// What the name has to satisfy here is that a type of that name implements
+/// [`ObjectId`], which the generated bindings do for every object the engine has
+/// a loader for — so a misspelled one, or an enum left out of the `enums` list,
+/// fails to compile naming the trait.
 ///
 /// [`ObjectId`]: ../dagger/trait.ObjectId.html
 ///
@@ -727,15 +962,15 @@ fn is_object_name(ty: &str) -> bool {
 /// here that a dispatch could hand the function, and no Dagger API returns one.
 ///
 /// [`Arguments`]: ../dagger/struct.Arguments.html
-fn kind_of(ty: &str) -> Result<Kind, String> {
+fn kind_of(ty: &str, enums: &Enums) -> Result<Kind, String> {
     let trimmed = ty.trim();
     if let Some(inner) = unwrap_option(trimmed) {
-        let mut inner = kind_of(inner)?;
+        let mut inner = kind_of(inner, enums)?;
         inner.optional = true;
         return Ok(inner);
     }
     if let Some(element) = unwrap_list(trimmed) {
-        let element = kind_of(element)?;
+        let element = kind_of(element, enums)?;
         if element.list {
             return Err(format!(
                 "unsupported type `{trimmed}`: a list goes one level deep, so `slice<T>` of a scalar or of an engine object — a list of lists is not something the module protocol carries"
@@ -762,7 +997,7 @@ fn kind_of(ty: &str) -> Result<Kind, String> {
         };
         return Ok(Kind {
             kind: element.kind,
-            object: element.object,
+            type_name: element.type_name,
             optional: false,
             list: true,
             getter,
@@ -783,22 +1018,28 @@ fn kind_of(ty: &str) -> Result<Kind, String> {
         "" | "()" => ("VOID_KIND", "void"),
         other => {
             // Written as `Directory` or as `gen::Directory`; both name the same
-            // object as far as the engine is concerned.
+            // object as far as the engine is concerned, and the same goes for a
+            // declared enum.
             if !is_object_name(other) {
                 return Err(format!(
-                    "unsupported type `{other}`: a function's arguments and return are string, int, float, bool, an engine object named as a plain type — `Directory`, `Container`, `Workspace` — or a `slice<T>` of one. Other generics are not supported"
+                    "unsupported type `{other}`: a function's arguments and return are string, int, float, bool, an engine object named as a plain type — `Directory`, `Container`, `Workspace`, an enum the module declares, or a `slice<T>` of one. Other generics are not supported"
                 ));
             }
+            let (kind, getter) = if enums.declares(other) {
+                ("ENUM_KIND", "enum_member")
+            } else {
+                ("OBJECT_KIND", "object")
+            };
             return Ok(Kind {
-                kind: "OBJECT_KIND",
-                object: last_segment(other).to_string(),
+                kind,
+                type_name: last_segment(other).to_string(),
                 optional: false,
                 list: false,
-                getter: "object",
+                getter,
             });
         }
     };
-    Ok(Kind { kind, object: String::new(), optional: false, list: false, getter })
+    Ok(Kind { kind, type_name: String::new(), optional: false, list: false, getter })
 }
 
 /// `container_echo` -> `containerEcho`, matching the API's naming.
@@ -819,31 +1060,35 @@ fn camel_case(name: &str) -> String {
 }
 
 /// Build the `Object` impl for the annotated block.
-fn expand(item: TokenStream) -> Result<TokenStream, String> {
+fn expand(attr: TokenStream, item: TokenStream) -> Result<TokenStream, String> {
+    let enums = enums_of(attr)?;
+
     // `check` is a marker of its own rather than an option on `function`, so a
     // method carrying only `#[dagger::check]` is still exported.
     let block = parse::parse_impl(item, &["function", "check"])?;
 
-    object_impl(&block)?
+    object_impl(&block, &enums)?
         .parse()
         .map_err(|e| format!("generated code did not parse: {e}"))
 }
 
-/// Render the `Object` impl for one parsed block.
+/// Render the `Object` impl for one parsed block, given the enums it declares.
 ///
 /// Split out of [`expand`] so the crate's own tests can reach it: everything
 /// above it speaks in `TokenTree`, which a test binary may not touch, and
 /// everything below it speaks in `String`.
-fn object_impl(block: &parse::ImplBlock) -> Result<String, String> {
+fn object_impl(block: &parse::ImplBlock, enums: &Enums) -> Result<String, String> {
     let type_name = &block.type_name;
 
     let mut defs = String::new();
     let mut arms = String::new();
 
     for f in &block.functions {
-        defs.push_str(&function_def(f)?);
-        arms.push_str(&dispatch_arm(type_name, f)?);
+        defs.push_str(&function_def(f, enums)?);
+        arms.push_str(&dispatch_arm(type_name, f, enums)?);
     }
+
+    let enum_defs = enum_defs(enums);
 
     Ok(format!(
         r#"
@@ -858,7 +1103,7 @@ impl ::dagger::Object for {type_name} {{
         const FUNCTIONS: &[::dagger::FunctionDef] = &[{defs}];
         FUNCTIONS
     }}
-
+{enum_defs}
     fn invoke(
         name: &::goish::gostring::string,
         args: &::dagger::Arguments,
@@ -875,6 +1120,7 @@ impl ::dagger::Object for {type_name} {{
         doc_literal = quote_str(&block.doc),
         source = source_map_def(&block.source),
         defs = defs,
+        enum_defs = enum_defs,
         arms = arms,
     ))
 }
@@ -896,10 +1142,36 @@ fn source_map_def(loc: &SourceLoc) -> String {
     )
 }
 
+/// Render `Object::enums`, the list `register` walks to declare them.
+///
+/// Each enum contributes the `EnumDef` its own attribute emitted, rather than
+/// anything read here: this side knows a path, and what the members are is
+/// `#[dagger::enum_type]`'s to say. Empty when the module declares none, so
+/// what it emits is what it emitted before enums existed and the trait's own
+/// default stands.
+fn enum_defs(enums: &Enums) -> String {
+    if enums.paths.is_empty() {
+        return String::new();
+    }
+    let listed = enums
+        .paths
+        .iter()
+        .map(|path| format!("<{path} as ::dagger::EnumType>::DEF,"))
+        .collect::<String>();
+    format!(
+        r#"
+    fn enums() -> &'static [::dagger::EnumDef] {{
+        const ENUMS: &[::dagger::EnumDef] = &[{listed}];
+        ENUMS
+    }}
+"#
+    )
+}
+
 /// Render one `FunctionDef`.
-fn function_def(f: &Function) -> Result<String, String> {
+fn function_def(f: &Function, enums: &Enums) -> Result<String, String> {
     let function_options = function_options_of(f)?;
-    function_def_with(f, &function_options)
+    function_def_with(f, &function_options, enums)
 }
 
 /// Render one `FunctionDef` from options already read.
@@ -907,11 +1179,15 @@ fn function_def(f: &Function) -> Result<String, String> {
 /// The split is what makes the marker attribute's options testable: reading
 /// them means walking a `TokenTree`, which a test binary may not do, but the
 /// text they turn into is ordinary `String` work.
-fn function_def_with(f: &Function, function_options: &FunctionOptions) -> Result<String, String> {
+fn function_def_with(
+    f: &Function,
+    function_options: &FunctionOptions,
+    enums: &Enums,
+) -> Result<String, String> {
     let mut args = String::new();
     for param in &f.params {
         let options = options_of(&param.attrs)?;
-        let kind = kind_of(&param.ty)?;
+        let kind = kind_of(&param.ty, enums)?;
 
         // The engine takes these on a contextual argument only — "can only set
         // default path for Object, not STRING_KIND" — and it says so at module
@@ -921,7 +1197,7 @@ fn function_def_with(f: &Function, function_options: &FunctionOptions) -> Result
             let which = if options.default_path.is_empty() { "ignore" } else { "default_path" };
             // A list of them is no good either: the engine loads one contextual
             // value per argument, so `slice<Directory>` has nowhere to put it.
-            if kind.list || (kind.object != "Directory" && kind.object != "File") {
+            if kind.list || (!kind.is_object("Directory") && !kind.is_object("File")) {
                 return Err(format!(
                     "`{which}` on `{}` applies only to Directory and File arguments, and `{}` is `{}`",
                     param.name, param.name, param.ty
@@ -954,7 +1230,7 @@ fn function_def_with(f: &Function, function_options: &FunctionOptions) -> Result
         // argument. A Workspace is the exception — the engine supplies that one
         // itself. Checking here turns a module that fails to load into a
         // signature that fails to compile, naming the argument.
-        if function_options.generate && !optional && !contextual && kind.object != "Workspace" {
+        if function_options.generate && !optional && !contextual && !kind.is_object("Workspace") {
             return Err(format!(
                 "`{}` is a generate function, so it must be callable with no arguments, but `{}` is required; make it an Option<T> or give it a `default`",
                 f.name, param.name
@@ -968,10 +1244,10 @@ fn function_def_with(f: &Function, function_options: &FunctionOptions) -> Result
             .join(", ");
 
         args.push_str(&format!(
-            "::dagger::ArgDef {{ name: {name}, kind: {kind}, object: {object}, list: {list}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated}, source: {source} }},",
+            "::dagger::ArgDef {{ name: {name}, kind: {kind}, type_name: {type_name}, list: {list}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated}, source: {source} }},",
             name = quote_str(&camel_case(&param.name)),
             kind = quote_str(kind.kind),
-            object = quote_str(&kind.object),
+            type_name = quote_str(&kind.type_name),
             list = kind.list,
             optional = optional,
             doc = quote_str(&options.doc),
@@ -986,12 +1262,12 @@ fn function_def_with(f: &Function, function_options: &FunctionOptions) -> Result
     // The engine is told what the function produces, so a fallible one is
     // declared by the type inside its `Result`: failure is not a kind.
     let (returns, _failure) = return_type(f)?;
-    let ret = kind_of(returns)?;
+    let ret = kind_of(returns, enums)?;
 
     // The other half of the generator contract: `dagger generate` applies what
     // the function returns, so a generator returns the changes it made —
     // directly, or as `Result<Changeset, string>`.
-    if function_options.generate && (ret.object != "Changeset" || ret.optional || ret.list) {
+    if function_options.generate && (!ret.is_object("Changeset") || ret.optional || ret.list) {
         return Err(format!(
             "`{}` is a generate function, so it must return `Changeset`, but it returns `{}`",
             f.name,
@@ -1000,11 +1276,11 @@ fn function_def_with(f: &Function, function_options: &FunctionOptions) -> Result
     }
 
     Ok(format!(
-        "::dagger::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_object: {ret_object}, return_list: {ret_list}, is_check: {is_check}, generator: {generator}, deprecated: {deprecated}, source: {source}, args: &[{args}] }},",
+        "::dagger::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_type_name: {ret_type_name}, return_list: {ret_list}, is_check: {is_check}, generator: {generator}, deprecated: {deprecated}, source: {source}, args: &[{args}] }},",
         name = quote_str(&camel_case(&f.name)),
         doc = quote_str(&f.doc),
         ret = quote_str(ret.kind),
-        ret_object = quote_str(&ret.object),
+        ret_type_name = quote_str(&ret.type_name),
         ret_list = ret.list,
         is_check = f.has_marker("check"),
         generator = function_options.generate,
@@ -1033,12 +1309,12 @@ fn list_encoder(kind: &str, call: &str) -> Result<String, String> {
 }
 
 /// Render the `match` arm that calls one function and encodes its result.
-fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
+fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, String> {
     let mut bindings = String::new();
     let mut call_args = Vec::new();
 
     for param in &f.params {
-        let kind = kind_of(&param.ty)?;
+        let kind = kind_of(&param.ty, enums)?;
         let accessor = if kind.optional {
             format!("{}_opt", kind.getter)
         } else {
@@ -1049,28 +1325,43 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
             accessor = accessor,
             name = quote_str(&camel_case(&param.name)),
         );
-        // An object arrives as its ID, so it is rebuilt through the trait
-        // rather than used directly. Naming the type the way the parameter does
-        // means it resolves in the user's scope, whatever they imported it from.
-        // A list of them arrives as a list of IDs and is rebuilt element by
-        // element, which is `from_ids` — the same trait, once per element.
-        let value = if kind.object.is_empty() {
-            read
-        } else {
-            let ty = unwrap_option(&param.ty).unwrap_or(param.ty.trim());
-            // Either way this has to name a *function*, not a call, so that an
-            // optional can hand it to `.map(…)`. `from_ids` is a free function
-            // and takes a turbofish; the trait method cannot, so it stays
-            // qualified.
-            let rebuild = match unwrap_list(ty) {
-                Some(element) => format!("::dagger::from_ids::<{element}>"),
-                None => format!("<{ty} as ::dagger::ObjectId>::from_id"),
-            };
-            if kind.optional {
-                format!("{read}.map({rebuild})")
-            } else {
-                format!("{rebuild}({read})")
+        // An object arrives as its ID and an enum as one of its member names, so
+        // neither is used as it lands: both are rebuilt through the trait that
+        // knows how. A list of objects arrives as a list of IDs and is rebuilt
+        // element by element, which is `from_ids` — the same trait, once per
+        // element. Naming the type the way the parameter does means it resolves
+        // in the user's scope, whatever they imported it from.
+        let ty = unwrap_option(&param.ty).unwrap_or(param.ty.trim());
+        let value = match kind.kind {
+            "OBJECT_KIND" => {
+                // Either way this has to name a *function*, not a call, so that
+                // an optional can hand it to `.map(…)`. `from_ids` is a free
+                // function and takes a turbofish; the trait method cannot, so
+                // it stays qualified.
+                let rebuild = match unwrap_list(ty) {
+                    Some(element) => format!("::dagger::from_ids::<{element}>"),
+                    None => format!("<{ty} as ::dagger::ObjectId>::from_id"),
+                };
+                if kind.optional {
+                    format!("{read}.map({rebuild})")
+                } else {
+                    format!("{rebuild}({read})")
+                }
             }
+            // `from_member` is fallible where `from_id` is not, so an optional
+            // one cannot be a `map`: that would leave a `Result` inside the
+            // `Option` for the function to receive.
+            "ENUM_KIND" => {
+                let from_member = format!("<{ty} as ::dagger::EnumType>::from_member");
+                if kind.optional {
+                    format!(
+                        "match {read} {{ ::core::option::Option::Some(member) => ::core::option::Option::Some({from_member}(&member)?), ::core::option::Option::None => ::core::option::Option::None }}"
+                    )
+                } else {
+                    format!("{from_member}(&{read})?")
+                }
+            }
+            _ => read,
         };
         bindings.push_str(&format!("let {binding} = {value};", binding = param.name));
         call_args.push(param.name.clone());
@@ -1085,7 +1376,7 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
     // method is reached without the engine having constructed anything.
     let call = format!("{receiver}{fname}({args})", fname = f.name, args = call_args.join(", "));
     let (returns, failure) = return_type(f)?;
-    let ret = kind_of(returns)?;
+    let ret = kind_of(returns, enums)?;
 
     // A returned `Option<T>` would have to be declared optional to the engine,
     // which `FunctionDef` has no room for yet, and every encoder below takes the
@@ -1123,6 +1414,9 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
         // Fallible, unlike the others: reading a generated object's id runs the
         // chain the function built.
         "OBJECT_KIND" => format!("::dagger::encode_object(&{call})?"),
+        // An enum goes back as the member's name, which the value already
+        // carries — nothing to fetch, so nothing to fail.
+        "ENUM_KIND" => format!("::dagger::encode_enum(&{call})"),
         other => return Err(format!("cannot encode a return of kind {other}")),
     };
 

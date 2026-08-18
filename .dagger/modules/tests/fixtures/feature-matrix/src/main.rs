@@ -42,6 +42,24 @@ use dagger::gen::{self, dag};
 use dagger::ObjectId;
 use goish::{append, errors, fmt, int, make, slice, string, strings};
 
+/// The operating system a build targets.
+///
+/// An enum the *module* declares, unlike the `NetworkProtocol` that
+/// `enumRoundTrip` below sends, which is the engine's own. `DebianTesting` is
+/// here for its spelling: the engine publishes a member under its
+/// SCREAMING_SNAKE_CASE of the variant name — `DEBIAN_TESTING` is what a caller
+/// writes — while what crosses the call boundary in both directions is the
+/// variant name as spelled here.
+#[dagger::enum_type]
+pub enum TargetOs {
+    /// Alpine Linux, the musl one.
+    Alpine,
+    /// Debian, the glibc one.
+    Debian,
+    /// Debian testing.
+    DebianTesting,
+}
+
 /// A module exercising the whole Rust SDK surface.
 pub struct FeatureMatrix;
 
@@ -52,7 +70,7 @@ pub struct FeatureMatrix;
 /// module's. It deliberately does not repeat the struct's doc above, so a
 /// check that finds this text has found the block's comment rather than
 /// whatever else happened to be lying around.
-#[dagger::object]
+#[dagger::object(enums(TargetOs))]
 impl FeatureMatrix {
     // ---------------------------------------------------------------- declaration
 
@@ -143,6 +161,31 @@ impl FeatureMatrix {
     #[dagger::function(deprecated = "use echo instead")]
     pub fn deprecated_function(&self) -> string {
         string("deprecated-function")
+    }
+
+    /// Return the OS the caller chose, unchanged.
+    ///
+    /// The round trip an enum a module declares has to survive: in as a member
+    /// name the engine resolved from what the caller wrote, out as the same
+    /// name, and back to the caller as the schema's spelling of it.
+    #[dagger::function]
+    pub fn echo_os(&self, os: TargetOs) -> TargetOs {
+        os
+    }
+
+    /// Report which libc an OS carries, or that none was chosen.
+    ///
+    /// An optional enum, and the half of the round trip that shows the module
+    /// received a *variant* rather than a string: only a real `TargetOs` can be
+    /// matched on.
+    #[dagger::function]
+    pub fn os_libc(&self, os: Option<TargetOs>) -> string {
+        match os {
+            Some(TargetOs::Alpine) => string("musl"),
+            Some(TargetOs::Debian) => string("glibc"),
+            Some(TargetOs::DebianTesting) => string("glibc-testing"),
+            None => string("unset"),
+        }
     }
 
     /// Fail on purpose.

@@ -250,6 +250,80 @@ type DeclarationChecks {
   }
 
   """
+  An enum the module declares should survive the round trip, in both
+  directions.
+
+  Three spellings of one member meet here, and keeping them apart is the whole
+  of what `#[dagger::enum_type]` has to get right. The Rust variant is
+  `DebianTesting`; the engine publishes the member as `DEBIAN_TESTING`, which is
+  what a caller writes; and what crosses the call boundary is the variant name
+  again, because the engine hands a module its own spelling back. A module that
+  registered the member under the wrong one of those fails here rather than
+  somewhere inside a call.
+
+  The optional half also shows the module received a *variant* and not a
+  string: `osLibc` reaches its answer by matching on one.
+  """
+  pub enumsRoundTrip(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonString(["echo-os", "--os", "ALPINE"], "ALPINE")
+    target.assertJsonString(
+      ["echo-os", "--os", "DEBIAN_TESTING"],
+      "DEBIAN_TESTING",
+      "a two-word variant should come back as the member the engine published",
+    )
+    target.assertJsonString(["os-libc", "--os", "DEBIAN"], "glibc")
+    target.assertJsonString(["os-libc"], "unset", "an optional enum may be omitted")
+  }
+
+  """
+  A member the enum does not have should be refused.
+
+  The engine holds a call to the members the module declared, so this is what
+  keeps a misspelling from arriving at the dispatch as a name it would have to
+  invent an answer for. `from_member` refuses one too — its message is what
+  `sdk`'s own suite asserts on — but nothing should ever reach it.
+  """
+  pub unknownEnumMembersAreRejected(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertFailure(
+      ["echo-os", "--os", "PLAN9"],
+      "a member the enum does not declare should be rejected",
+    )
+  }
+
+  """
+  An enum's name, its members and their doc comments should reach the schema.
+
+  The type is `FeatureMatrixTargetOs` rather than `TargetOs` because the engine
+  namespaces a module's own types with the module's name — the same rule that
+  leaves the main object called `FeatureMatrix` — so asserting on the
+  un-namespaced name would be asserting on a type nothing has.
+
+  Like `argumentMetadataIsDeclared` below, the descriptions have no behavioural
+  shadow: nothing a call returns says whether the doc comments were declared, so
+  the schema is the only place to look.
+  """
+  pub enumMetadataIsDeclared(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+    let document = "{__type(name:\"FeatureMatrixTargetOs\"){enumValues{name description}}}"
+
+    target
+      .query(document)
+      .assertStdoutContains(
+        "DEBIAN_TESTING",
+        "a variant should reach the schema as the engine's spelling of its name",
+      )
+
+    target
+      .query(document)
+      .assertStdoutContains(
+        "Alpine Linux, the musl one.",
+        "a variant's doc comment should become the member's description",
+      )
+  }
+
+  """
   `#[dagger(doc = ...)]` and `#[dagger(deprecated = ...)]` should reach the
   engine.
 

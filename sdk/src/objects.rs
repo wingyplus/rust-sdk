@@ -30,6 +30,20 @@ use goish::string;
 /// environment — the same thing `dag()` does, for the same reason. So the
 /// dispatch `#[dagger::object]` emits has nothing to thread through, and a
 /// caller rebuilding an object by hand needs nothing either.
+///
+/// # Why the note about enums
+///
+/// A signature naming a plain type is registered as an engine object of that
+/// name — the macro has no schema to check it against — and the check that it
+/// *is* one is this trait. So an enum the module itself declares lands here
+/// too, unless it was named in `#[dagger::object(enums(...))]`, and the error
+/// says so rather than leaving a `Directory` typo and a forgotten enum looking
+/// identical.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an engine object",
+    label = "not an engine object",
+    note = "if `{Self}` is an enum this module declares, mark it `#[dagger::enum_type]` and name it in `#[dagger::object(enums({Self}))]`; otherwise the engine has no loader for an object of that name, so check the spelling against the schema"
+)]
 pub trait ObjectId: Sized {
     /// Rebuild an object from an ID the engine supplied.
     fn from_id(id: string) -> Self;

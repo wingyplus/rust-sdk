@@ -195,6 +195,25 @@ caches hold source, not objects, and stay shared.
   signature only works *after* `dagger generate`: `src/gen` is a placeholder
   until then, which is why the templates and the two wrappers in
   `sdk/src/objects.rs` stay on scalars and IDs.
+- **An enum a module declares is told apart from an object by a list, and
+  nothing else.** `#[dagger::enum_type]` emits the `EnumType` impl, but a macro
+  sees one item at a time and Rust has no runtime reflection, so
+  `#[dagger::object(enums(TargetOs))]` is what connects the enum to the
+  `serve::<T>()` that registers it — and what makes `kind_of` map that name to
+  `ENUM_KIND` rather than to the object every other type name is. A type left
+  out of the list fails on `ObjectId`, whose `#[diagnostic::on_unimplemented]`
+  note says so. Don't try to infer the list: the two spellings are identical,
+  and a blanket `impl<T: ObjectId>` beside a blanket `impl<T: EnumType>` is a
+  coherence error, so there is no trait to ask.
+- **A module and the engine spell an enum member differently, on purpose.** The
+  engine keeps what `withEnumMember(name:)` was given as the member's *original*
+  name and publishes its own SCREAMING_SNAKE_CASE of it: `AlpineLinux` is
+  registered, `ALPINE_LINUX` is what a caller writes, and `AlpineLinux` is what
+  the engine hands the module and expects back (`ConvertToSDKInput` returns
+  `OriginalName` for the declaring module). So the Rust side deals in variant
+  names only. `withEnumMember` also takes a `value`, for an SDK whose members
+  carry a string distinct from their identifier; leaving it unset is what keeps
+  that true.
 - **`serve()` may not use `src/gen`, only `querybuilder`.** Registration is
   ordinary API traffic — `typeDef`, `function`, `module` — so `sdk/src/module.rs`
   builds it with `Chain`/`Args`/`Leaf` and sends it with `engine::fetch`, naming
