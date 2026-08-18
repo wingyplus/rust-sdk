@@ -688,6 +688,13 @@ fn kind_of(ty: &str) -> Result<Kind, String> {
     let (kind, getter) = match trimmed {
         "string" | "String" | "&str" => ("STRING_KIND", "string"),
         "int" | "i64" | "i32" | "isize" | "usize" => ("INTEGER_KIND", "int"),
+        // The engine has one Float, and goish spells it `float64`, which is
+        // `f64`. `f32` is listed for the same reason `i32` is listed above, and
+        // with the same caveat: the kind is right, but the accessor hands back
+        // the wide type and the encoder takes it, so a narrow parameter is a
+        // type error in the expansion rather than here. Widening the whole
+        // scalar set is one change, not two — don't fix half of it.
+        "float64" | "f64" | "f32" => ("FLOAT_KIND", "float"),
         "bool" => ("BOOLEAN_KIND", "bool"),
         "" | "()" => ("VOID_KIND", "void"),
         other => {
@@ -695,7 +702,7 @@ fn kind_of(ty: &str) -> Result<Kind, String> {
             // object as far as the engine is concerned.
             if !is_object_name(other) {
                 return Err(format!(
-                    "unsupported type `{other}`: a function's arguments and return are string, int, bool, or an engine object named as a plain type — `Directory`, `Container`, `Workspace`. Lists and other generics are not supported yet"
+                    "unsupported type `{other}`: a function's arguments and return are string, int, float, bool, or an engine object named as a plain type — `Directory`, `Container`, `Workspace`. Lists and other generics are not supported yet"
                 ));
             }
             return Ok(Kind {
@@ -992,6 +999,7 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
         "VOID_KIND" => format!("{{ {call}; ::dagger::encode_void() }}"),
         "STRING_KIND" => format!("::dagger::encode_string(&{call})"),
         "INTEGER_KIND" => format!("::dagger::encode_int({call})"),
+        "FLOAT_KIND" => format!("::dagger::encode_float({call})"),
         "BOOLEAN_KIND" => format!("::dagger::encode_bool({call})"),
         // Fallible, unlike the others: reading a generated object's id runs the
         // chain the function built.

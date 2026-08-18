@@ -58,6 +58,9 @@ fn scalars_map_to_their_kinds() {
         ("String", "STRING_KIND", "string"),
         ("int", "INTEGER_KIND", "int"),
         ("i64", "INTEGER_KIND", "int"),
+        ("float64", "FLOAT_KIND", "float"),
+        ("f64", "FLOAT_KIND", "float"),
+        ("f32", "FLOAT_KIND", "float"),
         ("bool", "BOOLEAN_KIND", "bool"),
         ("", "VOID_KIND", "void"),
         ("()", "VOID_KIND", "void"),
@@ -96,6 +99,7 @@ fn option_wraps_any_kind() {
     for (ty, kind, object) in [
         ("Option<string>", "STRING_KIND", ""),
         ("Option<int>", "INTEGER_KIND", ""),
+        ("Option<f64>", "FLOAT_KIND", ""),
         ("Option<bool>", "BOOLEAN_KIND", ""),
         ("Option<Directory>", "OBJECT_KIND", "Directory"),
         ("Option<gen::Container>", "OBJECT_KIND", "Container"),
@@ -214,6 +218,7 @@ fn a_fallible_return_is_declared_by_its_ok_type() {
     for (ty, kind, object) in [
         ("Result<string, string>", "STRING_KIND", ""),
         ("Result<int, string>", "INTEGER_KIND", ""),
+        ("Result<f64, string>", "FLOAT_KIND", ""),
         ("Result<bool, string>", "BOOLEAN_KIND", ""),
         ("Result<(), string>", "VOID_KIND", ""),
         ("Result<gen::Container, string>", "OBJECT_KIND", "Container"),
@@ -240,6 +245,7 @@ fn a_fallible_return_is_passed_through_with_a_question_mark() {
     for (ty, encoded) in [
         ("Result<string, string>", "::dagger::encode_string(&(Build.attempt())?)"),
         ("Result<int, string>", "::dagger::encode_int((Build.attempt())?)"),
+        ("Result<f64, string>", "::dagger::encode_float((Build.attempt())?)"),
         ("Result<bool, string>", "::dagger::encode_bool((Build.attempt())?)"),
         ("Result<(), string>", "{ (Build.attempt())?; ::dagger::encode_void() }"),
         // Two `?`s, and they are different failures: the inner one is the
@@ -409,6 +415,78 @@ fn an_undocumented_impl_declares_an_empty_doc() {
     assert!(
         generated.contains("const SOURCE: ::dagger::SourceMapDef = ::dagger::SourceMapDef::UNKNOWN;"),
         "no source map: {generated}"
+    );
+}
+
+/// A float crosses in both directions: the argument is read with the `float`
+/// accessor, and the return goes back through the one encoder that is not
+/// `encode_int`.
+///
+/// Both halves are asserted together because a getter or an encoder named one
+/// letter off compiles here and fails inside somebody's module, which is the
+/// same distance from the mistake that `__args` exists to keep.
+#[test]
+fn a_float_argument_and_return_use_the_float_accessor_and_encoder() {
+    let f = function("scale", vec![param("factor", "f64")], "f64");
+
+    let def = function_def(&f).expect("a float argument is supported");
+    assert!(
+        def.contains(r#"kind: "FLOAT_KIND", object: "", optional: false"#),
+        "declared as a float: {def}"
+    );
+    assert!(
+        def.contains(r#"return_kind: "FLOAT_KIND""#),
+        "declared as a float return: {def}"
+    );
+
+    let arm = dispatch_arm("Build", &f).expect("a float argument dispatches");
+    assert!(
+        arm.contains(r#"let factor = args.float("factor")?;"#),
+        "read with the float accessor: {arm}"
+    );
+    assert!(
+        arm.contains("::dagger::encode_float(Build.scale(factor))"),
+        "encoded with the float encoder: {arm}"
+    );
+}
+
+/// An `Option<f64>` reaches the optional accessor, the way every other optional
+/// scalar reaches its own.
+#[test]
+fn an_optional_float_argument_uses_the_optional_accessor() {
+    let f = function("scale", vec![param("factor", "Option<f64>")], "string");
+
+    let def = function_def(&f).expect("an optional float is supported");
+    assert!(
+        def.contains(r#"kind: "FLOAT_KIND", object: "", optional: true"#),
+        "declared optional: {def}"
+    );
+
+    let arm = dispatch_arm("Build", &f).expect("an optional float dispatches");
+    assert!(
+        arm.contains(r#"let factor = args.float_opt("factor")?;"#),
+        "read with the optional float accessor: {arm}"
+    );
+}
+
+/// A type with no kind is reported as unsupported, and the message lists the
+/// scalars there *are*.
+///
+/// `f64` used to land here: it fell through to `is_object_name`, failed the
+/// leading-uppercase test, and was reported as if it were a misspelled object.
+/// Naming the scalars is what tells a reader which of the two it is.
+#[test]
+fn the_unsupported_type_message_lists_the_scalars() {
+    // Matched rather than `expect_err`ed, unlike the refusals above: those come
+    // back from functions whose Ok is a `String`, and `Kind` has no `Debug` for
+    // `expect_err`'s bound to reach.
+    let message = match kind_of("dyn Transport") {
+        Err(message) => message,
+        Ok(_) => panic!("`dyn Transport` is not a supported type"),
+    };
+    assert!(
+        message.contains("string, int, float, bool"),
+        "names the scalars a signature may use: {message}"
     );
 }
 
