@@ -112,4 +112,42 @@ type ObjectChecks {
       "a Result<Container, string> should resolve to an id the CLI can chain from",
     )
   }
+
+  """
+  A function returning `Option<Container>` should hand back a chainable object
+  or a null.
+
+  The absent half is the interesting one, and it is why the dispatch matches on
+  the `Option` rather than mapping over it: resolving a returned object's id is
+  a round trip, so a `None` that reached `encode_object` anyway would either
+  fail the call or quietly resolve something the function never returned.
+  Nothing about a present `Container` shows that, since resolving one is what it
+  is supposed to do.
+
+  Both halves are read through a field selected off the container rather than
+  from the object itself, and that is the CLI's constraint rather than a choice:
+  `dagger call optional-container` on its own ends at the object, and `printID`
+  in v1.0.0-beta.9 — the release mod-test installs — has no case for a nil
+  response, so it fails the call with `printID: unexpected type for object:
+  <nil>` whatever the module returned. Upstream has since grown that case;
+  selecting a field works on both.
+
+  Selecting `stdout` still tells the three outcomes apart, which is all the
+  assertion needs: a resolved id prints what the container echoed, a failure
+  exits non-zero, and only a null prints `null`.
+  """
+  pub returnsAnOptionalContainer(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonString(
+      ["optional-container", "--present=true", "stdout"],
+      "optional-container",
+      "a Some should resolve to an id the CLI can chain from",
+    )
+    target.assertJsonOutput(
+      ["optional-container", "stdout"],
+      "null",
+      "a None should be a null rather than a resolved id or a failure",
+    )
+  }
 }

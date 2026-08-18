@@ -896,6 +896,47 @@ fn TestDispatchTurnsAMemberNameIntoAVariant(t: &mut testing::T) {
     }
 }
 
+/// What a `None` return encodes to is what an absent argument arrives as, and
+/// the two have to be the same three characters.
+///
+/// The engine hands an optional argument to a module as the JSON text `null` and
+/// reads the module's result back as a JSON document, so both ends of an
+/// `Option` cross the boundary through the same spelling. `encode_null` writing
+/// anything else — the *string* `"null"`, an empty document — would be a call
+/// that fails rather than a value that is absent, and it would fail inside the
+/// engine rather than here.
+///
+/// The one encoder in this suite: the rest of the dispatch is what
+/// `#[dagger::object]` emits, and `sdk/macros`'s own tests assert on that text.
+fn TestNullEncodesTheWayAnAbsentArgumentArrives(t: &mut testing::T) {
+    let encoded = dagger::encode_null();
+    assert_string(t, "encode_null", encoded.clone(), "null");
+
+    // Decoded rather than only compared, so the assertion is that those
+    // characters *are* JSON null. The starting value is a non-null one: `Value`
+    // defaults to `Null`, so a decode that wrote nothing at all would otherwise
+    // look like a pass.
+    let mut value = json::Value::Bool(true);
+    let err = json::Unmarshal(&bytes(encoded.clone()), &mut value);
+    if err != nil {
+        t.Fatal(fmt::Sprintf!("encode_null is not a JSON document: %v", err));
+    }
+    if !value.IsNull() {
+        t.Error("encode_null decoded to something other than JSON null");
+    }
+
+    // And back in through the argument side, which is where the engine's own
+    // `null` lands: the same text a module writes for `None` reads back as one.
+    let args = dagger::Arguments::new(slice!([](string, string) {
+        (string("maybe"), encoded)
+    }));
+    match args.string_opt("maybe") {
+        Ok(None) => {}
+        Ok(Some(got)) => t.Error(fmt::Sprintf!("an encoded null read back as %q", got)),
+        Err(why) => t.Error(fmt::Sprintf!("an encoded null failed to read back: %s", why)),
+    }
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────
 
 /// The depth-3 selection both the render and the decode test are built on:
@@ -1018,6 +1059,10 @@ fn main() {
         (
             "TestDispatchTurnsAMemberNameIntoAVariant",
             TestDispatchTurnsAMemberNameIntoAVariant,
+        ),
+        (
+            "TestNullEncodesTheWayAnAbsentArgumentArrives",
+            TestNullEncodesTheWayAnAbsentArgumentArrives,
         ),
     ];
     os::Exit(testing::Main(tests));

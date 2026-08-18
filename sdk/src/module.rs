@@ -113,6 +113,18 @@ pub struct FunctionDef {
     pub return_type_name: &'static str,
     /// Whether the function returns a *list* of `return_kind`.
     pub return_list: bool,
+    /// Whether the function may return no value at all — `Option<T>`.
+    ///
+    /// The engine takes this on the return `TypeDef` the same way it takes it on
+    /// an argument's, so what declares it is one `withOptional`. What the
+    /// dispatch then has to agree on is the encoding: a `None` is
+    /// [`encode_null`], and a return declared optional that encoded something
+    /// else would fail the call rather than the build.
+    ///
+    /// Independent of `return_list`: the two compose as `Option<slice<T>>`,
+    /// where [`build_type_def`] wraps the element in a list and marks *that*
+    /// optional — a nullable list, not a list of nullable elements.
+    pub return_optional: bool,
     /// From `#[dagger::check]`: `dagger check` runs this function.
     pub is_check: bool,
     /// From `#[dagger::function(generate)]`: this function is a generator, so
@@ -556,6 +568,22 @@ pub fn encode_void() -> string {
     string("null")
 }
 
+/// JSON-encode the absent half of an `Option<T>` return.
+///
+/// The same three characters [`encode_void`] writes, and deliberately a separate
+/// function: a Void return says the function produces no value *ever*, and this
+/// one says a function that does produce values did not this time. The engine is
+/// told which is which by the return `TypeDef` — `VOID_KIND` against a kind
+/// carrying `withOptional` — and only the declaration distinguishes them, since
+/// the wire form cannot.
+///
+/// Infallible, unlike [`encode_object`]: there is no object to resolve an ID
+/// for, which is the whole reason an `Option<Directory>` that is `None` costs no
+/// round trip.
+pub fn encode_null() -> string {
+    string("null")
+}
+
 /// JSON-encode an object result as the engine's ID for it.
 ///
 /// An object crosses the boundary as its ID in both directions, so returning
@@ -837,7 +865,13 @@ fn build_enum(transport: &dyn Transport, def: &EnumDef) -> Result<string, string
 /// Build one `Function` and return its ID.
 fn build_function(transport: &dyn Transport, def: &FunctionDef) -> Result<string, string> {
     let return_type =
-        build_type_def(transport, def.return_kind, def.return_type_name, def.return_list, false)?;
+        build_type_def(
+            transport,
+            def.return_kind,
+            def.return_type_name,
+            def.return_list,
+            def.return_optional,
+        )?;
 
     let mut args = Args::new();
     args.put("name", arg_string(def.name));
