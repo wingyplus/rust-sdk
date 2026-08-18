@@ -240,10 +240,29 @@ pub fn echo(&self, values: slice<string>) -> slice<string> {
 }
 ```
 
+`Option<T>` works in return position too, and means what it says: the return is
+declared optional to the engine, and a `None` reaches the caller as JSON null.
+
+```rust
+/// The tag, if one was set.
+#[dagger::function]
+pub fn tag(&self) -> Option<string> { … }
+```
+
+That is a different answer from `dagger::fail` — "there is no value" rather than
+"the call did not work" — which is why it is a return type rather than an error.
+
+The two compose, in both positions: `Option<slice<T>>` is a list the caller may
+leave out, or one the function may decline to return. The `Option` goes *around*
+the list, so what the engine is told about is a nullable list rather than a list
+of nullable elements, and a `None` is the same JSON null as any other absent
+value — not an empty list, which is a list that happens to have no elements.
+
 A list goes one level deep: `slice<slice<T>>` is a compile error, as is
-`slice<Option<T>>` — an `Option` goes *around* a list, `Option<slice<T>>`, which
-declares the list optional. An optional return is not supported either. Each is
-a compile error naming what to write instead.
+`slice<Option<T>>` — the element of a list is not the thing that may be absent.
+`Option<()>` is refused for its own reason: a Void is the absence of a value
+already, and the engine has no way to tell an optional one from a plain one.
+Each is a compile error naming what to write instead.
 
 And enums the module itself declares, which are named twice — on the enum, and
 on the `impl` block that serves it:
@@ -511,10 +530,10 @@ What is stubbed:
   a `Result` — so it is the query builder that would have to change, not the
   generator.
 
-- **Optional returns.** `Option<T>` in return position is a compile error
-  naming what is unsupported rather than a confusing failure further along.
-  Lists are supported now, in both directions and one level deep; a list of
-  lists, and a list whose elements are optional, are refused the same way.
+- **Nested shapes.** A list goes one level deep. `slice<slice<T>>`, and a list
+  whose elements are optional (`slice<Option<T>>`), are compile errors naming
+  what to write instead; `Option<slice<T>>` — the list itself being what may be
+  absent — works in both directions.
 
 Function declaration and dispatch **work**: `#[dagger::object]`,
 `#[dagger::function]`, `#[dagger::check]` and `#[dagger::enum_type]` read

@@ -93,9 +93,9 @@ pub use engine::{
 };
 pub use module::{
     encode_bool, encode_bool_list, encode_enum, encode_float, encode_float_list, encode_int,
-    encode_int_list, encode_object, encode_object_list, encode_string, encode_string_list,
-    encode_void, error_message, from_ids, serve, ArgDef, Arguments, EnumDef, EnumMemberDef,
-    EnumType, FunctionDef, Object, SourceMapDef,
+    encode_int_list, encode_null, encode_object, encode_object_list, encode_string,
+    encode_string_list, encode_void, error_message, from_ids, serve, ArgDef, Arguments, EnumDef,
+    EnumMemberDef, EnumType, FunctionDef, Object, SourceMapDef,
 };
 pub use objects::{Changeset, ObjectId, Workspace};
 pub use querybuilder::{

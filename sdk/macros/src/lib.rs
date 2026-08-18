@@ -26,6 +26,12 @@
 //! `Option<T>` rather than a marker, and a parameter with a `default` is
 //! optional by construction.
 //!
+//! A *return* may be `Option<T>` for the same reason and by the same spelling:
+//! the return type is declared optional to the engine, and a `None` reaches the
+//! caller as JSON null. That is a different answer from `dagger::fail` — "no
+//! value" rather than "the call did not work" — which is why it is a return type
+//! rather than an error.
+//!
 //! [`macro@check`] marks a function `dagger check` should run, the Go SDK's
 //! `+check` pragma. [`macro@enum_type`] declares an enum the module defines,
 //! which `#[dagger::object(enums(...))]` then names — the Go SDK's type with
@@ -346,8 +352,15 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// engine has no such loader for, or a plain misspelling, is a compile error
 /// about that trait rather than a module that fails to load.
 ///
-/// What is not supported is a list of anything, in either direction, and an
-/// optional return.
+/// A return may be `Option<T>`, which is declared optional to the engine and
+/// encoded as JSON null when it is `None`. That includes `Option<slice<T>>`:
+/// the list is what is optional, so the engine is told about a nullable list
+/// rather than a list of nullable elements, and a `None` is the same null any
+/// other absent return is. `Option<()>` is the one refusal — a Void return is
+/// the absence of a value already.
+///
+/// What is not supported is a list of lists, or an optional *element*
+/// (`slice<Option<T>>`); both are refused by name rather than emitted.
 ///
 /// [`ObjectId::from_id`]: ../dagger/trait.ObjectId.html#tymethod.from_id
 #[proc_macro_attribute]
@@ -966,6 +979,16 @@ fn kind_of(ty: &str, enums: &Enums) -> Result<Kind, String> {
     let trimmed = ty.trim();
     if let Some(inner) = unwrap_option(trimmed) {
         let mut inner = kind_of(inner, enums)?;
+        // `Option<()>` is the one wrapping that says nothing: Void already *is*
+        // the absence of a value, and the engine has no way to tell an optional
+        // Void from a Void. It would encode as `null` either way, so the two
+        // spellings would differ only in the typedef, and refusing it here is
+        // clearer than declaring a distinction that does not exist.
+        if inner.kind == "VOID_KIND" {
+            return Err(format!(
+                "`{trimmed}` is not a supported type: a Void is the absence of a value already, so write `()`"
+            ));
+        }
         inner.optional = true;
         return Ok(inner);
     }
@@ -1168,6 +1191,23 @@ fn enum_defs(enums: &Enums) -> String {
     )
 }
 
+/// Whether a return satisfies what `dagger generate` applies.
+///
+/// A generator hands back the changes it made, so the return is the engine's
+/// `Changeset` and neither an optional one nor a list of them: "maybe some
+/// changes" and "several sets of changes" are not shapes generation can apply,
+/// and now that `Option<T>` and `slice<T>` returns are otherwise supported,
+/// either would be declared to the engine rather than refused. `is_object`
+/// rather than a name comparison, so a module's own enum called `Changeset`
+/// cannot satisfy it either.
+///
+/// A function of its own so the rule can be tested: whether a method *is* a
+/// generator is read off the tokens in `#[dagger::function(generate)]`, and
+/// tokens cannot be built outside a macro expansion.
+fn is_generator_return(ret: &Kind) -> bool {
+    ret.is_object("Changeset") && !ret.optional && !ret.list
+}
+
 /// Render one `FunctionDef`.
 fn function_def(f: &Function, enums: &Enums) -> Result<String, String> {
     let function_options = function_options_of(f)?;
@@ -1267,7 +1307,7 @@ fn function_def_with(
     // The other half of the generator contract: `dagger generate` applies what
     // the function returns, so a generator returns the changes it made —
     // directly, or as `Result<Changeset, string>`.
-    if function_options.generate && (!ret.is_object("Changeset") || ret.optional || ret.list) {
+    if function_options.generate && !is_generator_return(&ret) {
         return Err(format!(
             "`{}` is a generate function, so it must return `Changeset`, but it returns `{}`",
             f.name,
@@ -1276,12 +1316,13 @@ fn function_def_with(
     }
 
     Ok(format!(
-        "::dagger::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_type_name: {ret_type_name}, return_list: {ret_list}, is_check: {is_check}, generator: {generator}, deprecated: {deprecated}, source: {source}, args: &[{args}] }},",
+        "::dagger::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_type_name: {ret_type_name}, return_list: {ret_list}, return_optional: {ret_optional}, is_check: {is_check}, generator: {generator}, deprecated: {deprecated}, source: {source}, args: &[{args}] }},",
         name = quote_str(&camel_case(&f.name)),
         doc = quote_str(&f.doc),
         ret = quote_str(ret.kind),
         ret_type_name = quote_str(&ret.type_name),
         ret_list = ret.list,
+        ret_optional = ret.optional,
         is_check = f.has_marker("check"),
         generator = function_options.generate,
         deprecated = quote_str(&function_options.deprecated),
@@ -1378,19 +1419,6 @@ fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, 
     let (returns, failure) = return_type(f)?;
     let ret = kind_of(returns, enums)?;
 
-    // A returned `Option<T>` would have to be declared optional to the engine,
-    // which `FunctionDef` has no room for yet, and every encoder below takes the
-    // bare value. Say so rather than emitting code that fails to typecheck
-    // somewhere inside the macro's output.
-    if ret.optional {
-        return Err(format!(
-            "`{}` returns `{}`; an optional return is not supported yet, so return `{}` and fail with `dagger::fail` instead",
-            f.name,
-            f.return_ty,
-            unwrap_option(returns).unwrap_or("T")
-        ));
-    }
-
     // `invoke` returns `Result<string, string>`, so a function that failed with
     // a message needs nothing but `?` on the way past, and one that failed with
     // a goish `error` needs its message read off it first. The parentheses are
@@ -1402,22 +1430,62 @@ fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, 
         Failure::GoError => format!("({call}).map_err(::dagger::error_message)?"),
     };
 
-    let encode = match ret.kind {
-        // A list is encoded by its element kind, one encoder each, so this is a
-        // guard in front of the scalar arms rather than four more of them.
-        _ if ret.list => list_encoder(ret.kind, &call)?,
-        "VOID_KIND" => format!("{{ {call}; ::dagger::encode_void() }}"),
-        "STRING_KIND" => format!("::dagger::encode_string(&{call})"),
-        "INTEGER_KIND" => format!("::dagger::encode_int({call})"),
-        "FLOAT_KIND" => format!("::dagger::encode_float({call})"),
-        "BOOLEAN_KIND" => format!("::dagger::encode_bool({call})"),
-        // Fallible, unlike the others: reading a generated object's id runs the
-        // chain the function built.
-        "OBJECT_KIND" => format!("::dagger::encode_object(&{call})?"),
-        // An enum goes back as the member's name, which the value already
-        // carries — nothing to fetch, so nothing to fail.
-        "ENUM_KIND" => format!("::dagger::encode_enum(&{call})"),
-        other => return Err(format!("cannot encode a return of kind {other}")),
+    // An `Option<T>` is encoded by the kind inside it, or as JSON null — the one
+    // encoding the engine reads back as "no value", and what `withOptional` on
+    // the return typedef promises it may get. `__value` cannot collide with
+    // anything: `camel_case` never produces a leading underscore, so no name in
+    // the user's signature reaches it.
+    //
+    // The `None` arm is why this is a `match` rather than a `map`: an
+    // `Option<Directory>` that is `None` has no object to resolve an id for, so
+    // it costs no round trip and cannot fail.
+    //
+    // A list composes rather than competing: `list_encoder` takes the
+    // expression to encode, so an `Option<slice<T>>` hands it `__value` and
+    // keeps the null. The list is tested *inside* this half deliberately — as a
+    // guard in front of the whole match, the way the infallible half spells it,
+    // it would take an optional list before the `Option` was ever unwrapped and
+    // encode a `slice` that is still inside one.
+    let encode = if ret.optional {
+        let some = if ret.list {
+            list_encoder(ret.kind, "__value")?
+        } else {
+            match ret.kind {
+                "STRING_KIND" => "::dagger::encode_string(&__value)".to_string(),
+                "INTEGER_KIND" => "::dagger::encode_int(__value)".to_string(),
+                "FLOAT_KIND" => "::dagger::encode_float(__value)".to_string(),
+                "BOOLEAN_KIND" => "::dagger::encode_bool(__value)".to_string(),
+                "OBJECT_KIND" => "::dagger::encode_object(&__value)?".to_string(),
+                // The member's name is already in the value, so nothing is
+                // fetched and nothing can fail — the `Some` arm needs no `?`.
+                "ENUM_KIND" => "::dagger::encode_enum(&__value)".to_string(),
+                other => {
+                    return Err(format!("cannot encode an optional return of kind {other}"))
+                }
+            }
+        };
+        format!(
+            "match {call} {{ ::core::option::Option::Some(__value) => {some}, ::core::option::Option::None => ::dagger::encode_null() }}"
+        )
+    } else {
+        match ret.kind {
+            // A list is encoded by its element kind, one encoder each, so this
+            // is a guard in front of the scalar arms rather than four more of
+            // them.
+            _ if ret.list => list_encoder(ret.kind, &call)?,
+            "VOID_KIND" => format!("{{ {call}; ::dagger::encode_void() }}"),
+            "STRING_KIND" => format!("::dagger::encode_string(&{call})"),
+            "INTEGER_KIND" => format!("::dagger::encode_int({call})"),
+            "FLOAT_KIND" => format!("::dagger::encode_float({call})"),
+            "BOOLEAN_KIND" => format!("::dagger::encode_bool({call})"),
+            // Fallible, unlike the others: reading a generated object's id runs
+            // the chain the function built.
+            "OBJECT_KIND" => format!("::dagger::encode_object(&{call})?"),
+            // An enum goes back as the member's name, which the value already
+            // carries — nothing to fetch, so nothing to fail.
+            "ENUM_KIND" => format!("::dagger::encode_enum(&{call})"),
+            other => return Err(format!("cannot encode a return of kind {other}")),
+        }
     };
 
     // An if/else chain rather than a `match`: the name is a goish `string`,

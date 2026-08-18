@@ -20,8 +20,8 @@
 
 use crate::parse::{variant_of, Enum, Function, ImplBlock, Param, SourceLoc, Variant};
 use crate::{
-    camel_case, dispatch_arm, enum_defs, enum_impl, function_def, function_def_with, kind_of,
-    object_impl, source_map_def, Enums, FunctionOptions,
+    camel_case, dispatch_arm, enum_defs, enum_impl, function_def, function_def_with,
+    is_generator_return, kind_of, object_impl, source_map_def, Enums, FunctionOptions,
 };
 
 /// A parameter with no `#[dagger(...)]` options.
@@ -384,17 +384,176 @@ fn an_optional_list_is_read_only_when_present() {
     );
 }
 
-/// An optional return has nowhere to go — `FunctionDef` cannot declare one, and
-/// the encoders take the bare value — so it is refused by name rather than as a
-/// type error inside the macro's own output.
+/// An `Option<T>` return is declared optional to the engine, and it is the
+/// *return* typedef that carries it: the kind stays the one inside the `Option`,
+/// so a caller sees a nullable String rather than some other type.
 #[test]
-fn an_optional_return_is_refused() {
-    for ty in ["Option<string>", "Option<Container>"] {
+fn an_optional_return_is_declared_optional() {
+    for (ty, kind, name, list) in [
+        ("Option<string>", "STRING_KIND", "", false),
+        ("Option<int>", "INTEGER_KIND", "", false),
+        ("Option<f64>", "FLOAT_KIND", "", false),
+        ("Option<bool>", "BOOLEAN_KIND", "", false),
+        ("Option<gen::Container>", "OBJECT_KIND", "Container", false),
+        // An enum a module declared, which shares the field with an object's
+        // name — the kind is what tells the two apart.
+        ("Option<TargetOs>", "ENUM_KIND", "TargetOs", false),
+        // Where this feature meets the list work: the `Option` goes around the
+        // list, so both flags are set and the engine is told about a nullable
+        // list rather than a list of nullable elements.
+        ("Option<slice<string>>", "STRING_KIND", "", true),
+        ("Option<Vec<gen::Directory>>", "OBJECT_KIND", "Directory", true),
+    ] {
         let f = function("maybe", Vec::new(), ty);
-        let message = dispatch_arm("Build", &f, &Enums::default()).expect_err("an optional return is refused");
+        let def = function_def(&f, &declared(&["TargetOs"])).unwrap_or_else(|e| panic!("{ty}: {e}"));
         assert!(
-            message.contains("optional return is not supported"),
+            def.contains(&format!(
+                r#"return_kind: "{kind}", return_type_name: "{name}", return_list: {list}, return_optional: true"#
+            )),
+            "`{ty}` declares an optional return: {def}"
+        );
+    }
+}
+
+/// A return that is not an `Option` says so, rather than leaving the field to be
+/// read as whatever it defaults to: the engine applies `withOptional` from this
+/// one flag, so a stale `true` would make every return nullable.
+#[test]
+fn a_plain_return_is_declared_required() {
+    for ty in ["string", "int", "f64", "bool", "", "Container", "Result<string, string>"] {
+        let f = function("plain", Vec::new(), ty);
+        let def = function_def(&f, &Enums::default()).unwrap_or_else(|e| panic!("{ty}: {e}"));
+        assert!(
+            def.contains("return_optional: false"),
+            "`{ty}` is not optional: {def}"
+        );
+    }
+}
+
+/// `None` is encoded as JSON null, and `Some` through the encoder for the kind
+/// inside the `Option` — the same one a bare return of that kind uses.
+///
+/// The object arm is the one with a `?`: resolving a returned object's id is a
+/// round trip. The `None` arm has no object to resolve, so it makes none.
+#[test]
+fn an_optional_return_encodes_none_as_null() {
+    for (ty, some) in [
+        ("Option<string>", "::dagger::encode_string(&__value)"),
+        ("Option<int>", "::dagger::encode_int(__value)"),
+        ("Option<f64>", "::dagger::encode_float(__value)"),
+        ("Option<bool>", "::dagger::encode_bool(__value)"),
+        ("Option<Container>", "::dagger::encode_object(&__value)?"),
+        // A list encoder takes the same `__value`, so the two features compose
+        // rather than compete: the `Some` arm encodes the whole list, and the
+        // `None` arm is still the null. A guard on `ret.list` in front of the
+        // optional split would have encoded a `slice` still inside its `Option`.
+        ("Option<slice<string>>", "::dagger::encode_string_list(&__value)"),
+        ("Option<slice<int>>", "::dagger::encode_int_list(&__value)"),
+        ("Option<Vec<Directory>>", "::dagger::encode_object_list(&__value)?"),
+        // An enum goes back as its member's name, which the value already
+        // carries — so unlike the object arm this one has no `?`.
+        ("Option<TargetOs>", "::dagger::encode_enum(&__value)"),
+    ] {
+        let f = function("maybe", Vec::new(), ty);
+        let arm = dispatch_arm("Build", &f, &declared(&["TargetOs"]))
+            .unwrap_or_else(|e| panic!("{ty}: {e}"));
+        assert!(
+            arm.contains(&format!(
+                "match Build.maybe() {{ ::core::option::Option::Some(__value) => {some}, ::core::option::Option::None => ::dagger::encode_null() }}"
+            )),
+            "`{ty}` encodes both halves: {arm}"
+        );
+    }
+}
+
+/// A fallible function may return an `Option` too, and the two unwrappings
+/// compose in one direction only: the `?` runs first, and what it yields is the
+/// `Option` the match then reads.
+#[test]
+fn a_fallible_optional_return_composes_both() {
+    let f = function("maybe", Vec::new(), "Result<Option<string>, string>");
+    let arm =
+        dispatch_arm("Build", &f, &Enums::default()).expect("a fallible optional return dispatches");
+    assert!(
+        arm.contains("match (Build.maybe())? { ::core::option::Option::Some(__value) => ::dagger::encode_string(&__value), ::core::option::Option::None => ::dagger::encode_null() }"),
+        "the `?` is inside the scrutinee: {arm}"
+    );
+
+    let def = function_def(&f, &Enums::default()).expect("a fallible optional return is declared");
+    assert!(
+        def.contains(
+            r#"return_kind: "STRING_KIND", return_type_name: "", return_list: false, return_optional: true"#
+        ),
+        "declared by its ok type, and optional: {def}"
+    );
+}
+
+/// A list of enum members is not supported, and wrapping it in an `Option` does
+/// not smuggle it past.
+///
+/// The element-kind mapping has no `ENUM_KIND` entry, so `slice<MyEnum>` is
+/// refused there — and `kind_of` unwraps the `Option` first, so the inner call
+/// is what fails and `Option<slice<MyEnum>>` is refused with the same message.
+/// The point is that it is refused *by name* rather than reaching the encoder,
+/// which has no arm for a list of members and would emit code that does not
+/// typecheck inside somebody's module.
+#[test]
+fn a_list_of_enum_members_is_refused_wrapped_or_not() {
+    for ty in ["slice<TargetOs>", "Option<slice<TargetOs>>", "Option<Vec<TargetOs>>"] {
+        let message = match kind_of(ty, &declared(&["TargetOs"])) {
+            Err(message) => message,
+            Ok(_) => panic!("`{ty}` should not be a supported type"),
+        };
+        assert!(
+            message.contains("a list is of string, int, float, bool, or an engine object"),
+            "`{ty}` says what a list may hold: {message}"
+        );
+    }
+}
+
+/// `Option<()>` says nothing a bare `()` does not: Void already is the absence of
+/// a value, and it encodes as `null` either way, so the two would differ only in
+/// a typedef the engine cannot tell apart.
+#[test]
+fn an_optional_void_is_refused() {
+    for ty in ["Option<()>", "Result<Option<()>, string>"] {
+        let f = function("nothing", Vec::new(), ty);
+        let message = function_def(&f, &Enums::default()).expect_err("an optional Void is refused");
+        assert!(
+            message.contains("the absence of a value already"),
             "says why: {message}"
+        );
+    }
+}
+
+/// A generator's return is the changes it made. "Maybe some changes" and
+/// "several sets of changes" are not shapes `dagger generate` can apply, so a
+/// `Changeset` wrapped in either an `Option` or a `slice` stays refused now that
+/// both wrappings are otherwise supported.
+///
+/// Asserted against the rule rather than against `function_def`, because being a
+/// generator is carried by the tokens in `#[dagger::function(generate)]` and a
+/// `TokenTree` cannot be built here at all — the `proc_macro` API panics outside
+/// a macro expansion.
+#[test]
+fn a_generator_return_is_a_changeset_and_not_a_wrapped_one() {
+    for (ty, ok) in [
+        ("Changeset", true),
+        ("gen::Changeset", true),
+        ("Option<Changeset>", false),
+        ("Option<gen::Changeset>", false),
+        // A list of them is refused for the same reason: `dagger generate`
+        // applies one set of changes, not several.
+        ("slice<Changeset>", false),
+        ("Option<slice<Changeset>>", false),
+        ("Container", false),
+        ("string", false),
+    ] {
+        let ret = kind_of(ty, &Enums::default()).unwrap_or_else(|e| panic!("{ty}: {e}"));
+        assert_eq!(
+            is_generator_return(&ret),
+            ok,
+            "`{ty}` as a generator's return"
         );
     }
 }
@@ -469,17 +628,6 @@ fn a_non_string_error_is_refused() {
             "names what to write instead: {message}"
         );
     }
-}
-
-/// The rules a return is held to are the ok type's, fallible or not.
-#[test]
-fn a_fallible_optional_return_is_refused_too() {
-    let f = function("maybe", Vec::new(), "Result<Option<string>, string>");
-    let message = dispatch_arm("Build", &f, &Enums::default()).expect_err("an optional return is refused");
-    assert!(
-        message.contains("optional return is not supported") && message.contains("return `string`"),
-        "says why, and what to return instead: {message}"
-    );
 }
 
 /// `#[dagger::function(deprecated = "...")]` becomes a reason on the function
