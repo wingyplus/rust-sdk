@@ -9,16 +9,29 @@
 //!
 //! ```ignore
 //! #[dagger::object]
+//! pub struct MyModule {
+//!     /// The image every step runs in.
+//!     pub image: string,
+//! }
+//!
+//! #[dagger::object]
 //! impl MyModule {
+//!     /// Configure the module.
+//!     #[dagger::constructor]
+//!     pub fn new(#[dagger(default = "alpine:3.21")] image: string) -> Self { … }
+//!
 //!     /// Build the project.
 //!     #[dagger::function]
 //!     pub fn build(
 //!         &self,
-//!         #[dagger(default = "alpine:3.21")] image: string,
 //!         #[dagger(doc = "Tag to apply")] tag: Option<string>,
 //!     ) -> string { … }
 //! }
 //! ```
+//!
+//! [`macro@object`] goes on both halves of the type, because an attribute macro
+//! sees only the item it is written on: the `impl` block carries the functions,
+//! the `struct` carries the state that survives from one call to the next.
 //!
 //! Argument options live in `#[dagger(...)]` on the parameter — `default`,
 //! `default_path`, `ignore`, `doc`, `deprecated` — mirroring the Go SDK's
@@ -33,20 +46,22 @@
 //! rather than an error.
 //!
 //! [`macro@check`] marks a function `dagger check` should run, the Go SDK's
-//! `+check` pragma. [`macro@enum_type`] declares an enum the module defines,
-//! which `#[dagger::object(enums(...))]` then names — the Go SDK's type with
-//! string constants, the TypeScript SDK's `@enumType()`.
+//! `+check` pragma. [`macro@constructor`] marks the one that builds the object,
+//! the Go SDK's `func New(...)`. [`macro@enum_type`] declares an enum the
+//! module defines, which `#[dagger::object(enums(...))]` then names — the Go
+//! SDK's type with string constants, the TypeScript SDK's `@enumType()`.
 //!
 //! What a function *is* otherwise goes in the marker attribute —
 //! `#[dagger::function(generate)]` declares a generator and
 //! `#[dagger::function(deprecated = "...")]` a deprecation, the way Go writes
 //! `+generate` and `+deprecated` in the doc comment.
 //!
-//! Descriptions come from `///` comments: a method's is the function's, and the
-//! one on the annotated `impl` block is the object's — and the module's, since
-//! the crate's `//!` doc is not something an attribute macro on an `impl` can
-//! see. Every declaration also carries the file and line it was written at, read
-//! off its `proc_macro::Span`, so an engine-side error can point at the source.
+//! Descriptions come from `///` comments: a method's is the function's, a
+//! field's is the field's, and the one on the annotated `impl` block is the
+//! object's — and the module's, since the crate's `//!` doc is not something an
+//! attribute macro on an `impl` can see. Every declaration also carries the
+//! file and line it was written at, read off its `proc_macro::Span`, so an
+//! engine-side error can point at the source.
 
 extern crate proc_macro;
 
@@ -209,12 +224,80 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
-/// Declare the object a module serves, and the functions it exposes.
+/// Mark an associated function as the object's constructor.
 ///
-/// Applied to the `impl` block of the module's root type. It reads the method
-/// signatures at compile time and emits the `Object` impl that `serve::<T>()`
-/// walks — the table describing the module to the engine, and the dispatch that
-/// routes an incoming call.
+/// A constructor configures the module once, rather than every function
+/// repeating the same arguments. Its parameters become the module's own flags,
+/// so they are written *before* the function on the command line:
+///
+/// ```ignore
+/// #[dagger::object]
+/// pub struct Build {
+///     /// The image every step runs in.
+///     pub image: string,
+/// }
+///
+/// #[dagger::object]
+/// impl Build {
+///     /// Configure the builder.
+///     #[dagger::constructor]
+///     pub fn new(#[dagger(default = "alpine:3.21")] image: string) -> Build {
+///         Build { image }
+///     }
+///
+///     /// The image this builder was configured with.
+///     #[dagger::function]
+///     pub fn base(&self) -> string {
+///         self.image.clone()
+///     }
+/// }
+/// ```
+///
+/// ```console
+/// $ dagger call --image=rust:1.90 base
+/// rust:1.90
+/// ```
+///
+/// This is the Go SDK's `func New(...) *MyModule`. The name is free here
+/// because the attribute is what marks it — `new` is only the convention — and
+/// an object may declare at most one.
+///
+/// # Shape
+///
+/// A constructor takes no receiver and returns the object it builds: `Self`, or
+/// the type by name, or either inside a `Result`. Its arguments carry the same
+/// `#[dagger(...)]` options any other function's do.
+///
+/// The engine registers it under the empty name, calls it before any function
+/// when the caller starts from the module, and keeps the state it built for the
+/// call that follows.
+///
+/// # Without one
+///
+/// An object with no constructor is built from an empty document, which works
+/// exactly when it has no fields to fill — a unit struct. A `struct` with
+/// fields and no constructor fails at call time, naming the field nothing
+/// supplied.
+///
+/// Like [`macro@function`], this attribute is inert on its own:
+/// [`macro@object`] on the surrounding `impl` block is what reads it.
+#[proc_macro_attribute]
+pub fn constructor(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+/// Declare the object a module serves: its state, and the functions it exposes.
+///
+/// Applied to *both* halves of the module's root type — the `struct` and the
+/// `impl` block — because an attribute macro sees only the item it is written
+/// on, and the two carry different halves of what the engine has to be told.
+///
+/// On the `impl` block it reads the method signatures at compile time and emits
+/// the `Object` impl that `serve::<T>()` walks: the table describing the module
+/// to the engine, and the dispatch that routes an incoming call. On the
+/// `struct` it reads the `pub` fields and emits `ObjectState`, which encodes
+/// them into the document the engine keeps between calls and decodes them back
+/// into the receiver — see [State](#state) below.
 ///
 /// ```ignore
 /// #![no_std]
@@ -222,6 +305,7 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// use goish::{fmt, string};
 ///
+/// #[dagger::object]
 /// pub struct Build;
 ///
 /// /// Builds and publishes images.
@@ -255,13 +339,43 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
+/// # State
+///
+/// A `pub` field of the annotated `struct` is state: the engine declares it,
+/// keeps the value the module last encoded, and hands it back on the next call
+/// as the receiver a function is dispatched on.
+///
+/// ```ignore
+/// #[dagger::object]
+/// pub struct Build {
+///     /// The image every step runs in.       // becomes the field's description
+///     pub image: string,
+///     /// Superseded by `image`.
+///     #[dagger(deprecated = "use image instead")]
+///     pub base: Option<string>,
+/// }
+/// ```
+///
+/// Unlike a parameter, a field takes its description from its `///` comment —
+/// it is state rather than an input, and Rust does have doc comments there — so
+/// `deprecated` is the only `#[dagger(...)]` option it accepts.
+///
+/// A field must be `pub`. A private one would be state the engine never sees,
+/// and so state that does not survive the call that set it; the macro says so
+/// rather than dropping it the way Go drops an unexported field.
+///
+/// [`macro@constructor`] is what fills the fields in, and a function returning
+/// `Self` hands back a reconfigured object — as its *state* rather than as an
+/// ID, since the engine holds no value to mint one for.
+///
 /// # Descriptions
 ///
-/// The `///` comment on the annotated block is the object's description, and
-/// the module's: a Rust module's root type *is* the module, and the crate's own
-/// `//!` doc belongs to the file, which an attribute macro on an `impl` never
-/// sees. Write it on the `impl`, not on the `struct` — the two are separate
-/// items and only the one carrying this attribute reaches the macro.
+/// The `///` comment on the annotated `impl` block is the object's description,
+/// and the module's: a Rust module's root type *is* the module, and the crate's
+/// own `//!` doc belongs to the file, which an attribute macro on an `impl`
+/// never sees. Write it on the `impl`, not on the `struct` — both carry this
+/// attribute now, but only the block's reaches the engine; the struct's is for
+/// `cargo doc`.
 ///
 /// Each declaration also carries where it was written — file, line and column,
 /// read off its `proc_macro::Span` — so an engine-side error about a function
@@ -488,7 +602,10 @@ fn is_dagger_attr(stream: TokenStream) -> bool {
             _ => break,
         }
     }
-    matches!(path.as_str(), "dagger" | "dagger::function" | "dagger::check")
+    matches!(
+        path.as_str(),
+        "dagger" | "dagger::function" | "dagger::check" | "dagger::constructor"
+    )
 }
 
 /// Build the `EnumType` impl for the annotated enum.
@@ -660,6 +777,59 @@ fn function_options_of(f: &Function) -> Result<FunctionOptions, String> {
                     render(&part),
                     f.name
                 ))
+            }
+        }
+    }
+    Ok(options)
+}
+
+/// Options read from `#[dagger(...)]` on a struct field.
+#[derive(Default)]
+struct FieldOptions {
+    deprecated: String,
+}
+
+/// Read the `#[dagger(...)]` options attached to a field.
+///
+/// Far fewer than a parameter's, and deliberately: a field has a `///` comment
+/// of its own, so `doc` would be a second way to say the same thing, and it is
+/// never an *input* to a call, so `default`, `default_path` and `ignore` have
+/// nothing to apply to. Each is refused by name rather than ignored.
+fn field_options_of(field: &parse::StructField) -> Result<FieldOptions, String> {
+    let mut options = FieldOptions::default();
+    for attr in field.attrs.iter().filter(|a| a.path == "dagger") {
+        for part in split_commas(&attr.args) {
+            let key = match part.first() {
+                Some(TokenTree::Ident(id)) => id.to_string(),
+                _ => {
+                    return Err(format!(
+                        "unrecognized #[dagger(...)] entry on `{}`: {}",
+                        field.name,
+                        render(&part)
+                    ))
+                }
+            };
+            let value = &part[1..];
+            // Skip the `=`, the way `options_of` does.
+            let value = match value.first() {
+                Some(TokenTree::Punct(p)) if p.as_char() == '=' => &value[1..],
+                _ => value,
+            };
+
+            match key.as_str() {
+                "deprecated" => options.deprecated = literal_text(value, &key)?,
+                "doc" => {
+                    return Err(format!(
+                        "`{}` is a field, so write its description as a `///` comment rather than as `doc`",
+                        field.name
+                    ))
+                }
+                other => {
+                    return Err(format!(
+                        "unknown #[dagger(...)] option `{other}` on the field `{}`; a field takes only `deprecated`, since it is state rather than an argument",
+                        field.name
+                    ))
+                }
             }
         }
     }
@@ -1082,17 +1252,145 @@ fn camel_case(name: &str) -> String {
     out
 }
 
-/// Build the `Object` impl for the annotated block.
+/// Build the impl the annotated item calls for.
+///
+/// An object is two items — a `struct` holding its state and an `impl` holding
+/// its functions — and an attribute macro sees only the one it is written on.
+/// So `#[dagger::object]` goes on both and emits a different half from each:
+/// `ObjectState` from the `struct`, `Object` from the `impl`.
+///
+/// Both halves are handed the `enums(...)` list, because a field may name a
+/// module's enum as readily as an argument may. That means writing the list
+/// twice for a module that has both, which is the price of the attribute
+/// seeing one item at a time.
 fn expand(attr: TokenStream, item: TokenStream) -> Result<TokenStream, String> {
     let enums = enums_of(attr)?;
 
-    // `check` is a marker of its own rather than an option on `function`, so a
-    // method carrying only `#[dagger::check]` is still exported.
-    let block = parse::parse_impl(item, &["function", "check"])?;
+    let generated = match parse::item_keyword(&item).as_str() {
+        "struct" => state_impl(&parse::parse_struct(item)?, &enums)?,
+        // `check` and `constructor` are markers of their own rather than
+        // options on `function`, so a method carrying only one of them is still
+        // read.
+        "impl" => object_impl(
+            &parse::parse_impl(item, &["function", "check", "constructor"])?,
+            &enums,
+        )?,
+        other => {
+            return Err(format!(
+                "#[dagger::object] applies to a `struct` or an `impl` block, not to `{other}`"
+            ))
+        }
+    };
 
-    object_impl(&block, &enums)?
+    generated
         .parse()
         .map_err(|e| format!("generated code did not parse: {e}"))
+}
+
+/// Render the `ObjectState` impl for one `struct` declaration.
+///
+/// The three halves of a field's life, from one declaration: the [`FieldDef`]
+/// the engine is told about, the read that rebuilds it out of the parent
+/// document, and the write that puts it back.
+///
+/// [`FieldDef`]: ../dagger/struct.FieldDef.html
+fn state_impl(def: &parse::StructDef, enums: &Enums) -> Result<String, String> {
+    let type_name = &def.type_name;
+
+    let mut defs = String::new();
+    let mut reads = String::new();
+    let mut writes = String::new();
+
+    for field in &def.fields {
+        // A private field would be state the engine never sees, and so state
+        // that does not survive the call it was set in — the very thing an
+        // object carrying data is for. Rather than drop it silently the way Go
+        // drops an unexported field, say so.
+        if !field.is_pub {
+            return Err(format!(
+                "`{}.{}` is private, so the engine would neither declare it nor carry it from one call to the next; make it `pub`, or move it out of the object",
+                type_name, field.name
+            ));
+        }
+
+        let options = field_options_of(field)?;
+        let kind = kind_of(&field.ty, enums)?;
+        if kind.kind == "VOID_KIND" {
+            return Err(format!(
+                "`{}.{}` has no type the engine can carry",
+                type_name, field.name
+            ));
+        }
+        // A field of the object's own type would need the type to contain
+        // itself, which does not compile — but it reaches here as an ordinary
+        // object name, so the error would be about `ObjectId` rather than about
+        // the field.
+        if kind.is_object(type_name) {
+            return Err(format!(
+                "`{}.{}` is the object's own type, which cannot be one of its fields",
+                type_name, field.name
+            ));
+        }
+
+        let api_name = camel_case(&field.name);
+
+        defs.push_str(&format!(
+            "::dagger::FieldDef {{ name: {name}, kind: {kind}, type_name: {type_of}, list: {list}, optional: {optional}, doc: {doc}, deprecated: {deprecated}, source: {source} }},",
+            name = quote_str(&api_name),
+            kind = quote_str(kind.kind),
+            type_of = quote_str(&kind.type_name),
+            list = kind.list,
+            optional = kind.optional,
+            doc = quote_str(&field.doc),
+            deprecated = quote_str(&options.deprecated),
+            source = source_map_def(&field.source),
+        ));
+
+        reads.push_str(&format!(
+            "{name}: {value},",
+            name = field.name,
+            value = read_value("state", &api_name, &field.ty, &kind),
+        ));
+
+        writes.push_str(&format!(
+            "__state.put({name}, {value});",
+            name = quote_str(&api_name),
+            value = write_value(&field.name, &kind)?,
+        ));
+    }
+
+    // The two `allow`s are both about the unit case, which every scaffolded
+    // module starts in: with no fields there is nothing to read the state for
+    // and nothing to write to the builder, and a warning in either would land
+    // in the user's build rather than here.
+    Ok(format!(
+        r#"
+impl ::dagger::ObjectState for {type_name} {{
+    fn fields() -> &'static [::dagger::FieldDef] {{
+        const FIELDS: &[::dagger::FieldDef] = &[{defs}];
+        FIELDS
+    }}
+
+    #[allow(unused_variables)]
+    fn from_state(
+        state: &::dagger::State,
+    ) -> ::core::result::Result<{type_name}, ::goish::gostring::string> {{
+        ::core::result::Result::Ok({type_name} {{ {reads} }})
+    }}
+
+    #[allow(unused_mut)]
+    fn to_state(&self) -> ::core::result::Result<::goish::gostring::string, ::goish::gostring::string> {{
+        let mut __state = ::dagger::StateWriter::new();
+        {writes}
+        ::core::result::Result::Ok(__state.finish())
+    }}
+}}
+"#,
+        type_name = type_name,
+        defs = defs,
+        reads = reads,
+        writes = writes,
+    ))
 }
 
 /// Render the `Object` impl for one parsed block, given the enums it declares.
@@ -1105,13 +1403,34 @@ fn object_impl(block: &parse::ImplBlock, enums: &Enums) -> Result<String, String
 
     let mut defs = String::new();
     let mut arms = String::new();
+    let mut constructor: Option<&Function> = None;
 
     for f in &block.functions {
+        if f.has_marker("constructor") {
+            if f.has_marker("function") || f.has_marker("check") {
+                return Err(format!(
+                    "`{}` is both a constructor and a function; a constructor is reached as the module's own arguments rather than by name, so it can only be one",
+                    f.name
+                ));
+            }
+            if let Some(first) = constructor {
+                return Err(format!(
+                    "`{}` declares a second constructor; `{}` is already this object's, and the engine registers exactly one",
+                    f.name, first.name
+                ));
+            }
+            constructor = Some(f);
+            continue;
+        }
         defs.push_str(&function_def(f, enums)?);
         arms.push_str(&dispatch_arm(type_name, f, enums)?);
     }
 
     let enum_defs = enum_defs(enums);
+    let constructor = match constructor {
+        Some(f) => constructor_impl(type_name, f, enums)?,
+        None => String::new(),
+    };
 
     Ok(format!(
         r#"
@@ -1126,8 +1445,10 @@ impl ::dagger::Object for {type_name} {{
         const FUNCTIONS: &[::dagger::FunctionDef] = &[{defs}];
         FUNCTIONS
     }}
-{enum_defs}
+{enum_defs}{constructor}
+    #[allow(unused_variables)]
     fn invoke(
+        self,
         name: &::goish::gostring::string,
         args: &::dagger::Arguments,
     ) -> ::core::result::Result<::goish::gostring::string, ::goish::gostring::string> {{
@@ -1144,7 +1465,66 @@ impl ::dagger::Object for {type_name} {{
         source = source_map_def(&block.source),
         defs = defs,
         enum_defs = enum_defs,
+        constructor = constructor,
         arms = arms,
+    ))
+}
+
+/// Render the two `Object` methods a declared constructor overrides.
+///
+/// The engine knows a constructor by having no name at all, which is why the
+/// `FunctionDef` here is built with an empty one rather than with the Rust
+/// function's: `new` is a Rust convention, and the API has no such function.
+fn constructor_impl(type_name: &str, f: &Function, enums: &Enums) -> Result<String, String> {
+    if f.takes_self {
+        return Err(format!(
+            "`{}` is a constructor, so it builds the object rather than being called on one; drop the `self` parameter",
+            f.name
+        ));
+    }
+
+    let (returns, failure) = return_type(f)?;
+    let ret = kind_of(returns, enums)?;
+    if !ret.is_object(type_name) || ret.optional || ret.list {
+        return Err(format!(
+            "`{}` is a constructor, so it must return `{}`, but it returns `{}`",
+            f.name,
+            type_name,
+            if f.return_ty.is_empty() { "()" } else { &f.return_ty }
+        ));
+    }
+
+    let options = function_options_of(f)?;
+    if options.generate {
+        return Err(format!(
+            "`{}` is a constructor, so `dagger generate` has nothing to run it for",
+            f.name
+        ));
+    }
+
+    let (bindings, call) = call_expr(&format!("{type_name}::"), f, enums)?;
+
+    Ok(format!(
+        r#"
+    fn constructor() -> ::core::option::Option<&'static ::dagger::FunctionDef> {{
+        const CONSTRUCTOR: ::dagger::FunctionDef = {def}
+        ::core::option::Option::Some(&CONSTRUCTOR)
+    }}
+
+    #[allow(unused_variables)]
+    fn construct(
+        args: &::dagger::Arguments,
+    ) -> ::core::result::Result<::goish::gostring::string, ::goish::gostring::string> {{
+        {bindings}
+        ::dagger::ObjectState::to_state(&{call})
+    }}
+"#,
+        // The rendered def ends in a trailing comma, which is what a table
+        // entry wants and a `const` initializer does not; a `;` after it is the
+        // one place that matters.
+        def = function_def_named(f, "", &options, enums)?.trim_end_matches(',').to_string() + ";",
+        bindings = bindings,
+        call = wrap_failure(call, &failure),
     ))
 }
 
@@ -1221,6 +1601,21 @@ fn function_def(f: &Function, enums: &Enums) -> Result<String, String> {
 /// text they turn into is ordinary `String` work.
 fn function_def_with(
     f: &Function,
+    function_options: &FunctionOptions,
+    enums: &Enums,
+) -> Result<String, String> {
+    function_def_named(f, &camel_case(&f.name), function_options, enums)
+}
+
+/// Render one `FunctionDef` under a given API name.
+///
+/// The name is a parameter because a constructor has none: the engine spells
+/// "this function builds the object" as the empty name, so everything else
+/// about it — its arguments, their defaults, its source map — is built exactly
+/// as any other function's is.
+fn function_def_named(
+    f: &Function,
+    api_name: &str,
     function_options: &FunctionOptions,
     enums: &Enums,
 ) -> Result<String, String> {
@@ -1317,7 +1712,7 @@ fn function_def_with(
 
     Ok(format!(
         "::dagger::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_type_name: {ret_type_name}, return_list: {ret_list}, return_optional: {ret_optional}, is_check: {is_check}, generator: {generator}, deprecated: {deprecated}, source: {source}, args: &[{args}] }},",
-        name = quote_str(&camel_case(&f.name)),
+        name = quote_str(api_name),
         doc = quote_str(&f.doc),
         ret = quote_str(ret.kind),
         ret_type_name = quote_str(&ret.type_name),
@@ -1329,6 +1724,143 @@ fn function_def_with(
         source = source_map_def(&f.source),
         args = args,
     ))
+}
+
+/// The expression that reads one value out of a carrier.
+///
+/// The same code for an argument of a call and for a field of the parent
+/// object: `State` derefs to `Arguments`, so the two carry one accessor set and
+/// what differs between them is the name of the local they are reached through.
+///
+/// An object arrives as its ID and an enum as one of its member names, so
+/// neither is used as it lands: both are rebuilt through the trait that knows
+/// how. A list of objects arrives as a list of IDs and is rebuilt element by
+/// element, which is `from_ids` — the same trait, once per element. Naming the
+/// type the way the declaration does means it resolves in the user's scope,
+/// whatever they imported it from.
+fn read_value(carrier: &str, api_name: &str, ty: &str, kind: &Kind) -> String {
+    let accessor = if kind.optional {
+        format!("{}_opt", kind.getter)
+    } else {
+        kind.getter.to_string()
+    };
+    let read = format!(
+        "{carrier}.{accessor}({name})?",
+        carrier = carrier,
+        accessor = accessor,
+        name = quote_str(api_name),
+    );
+    let ty = unwrap_option(ty).unwrap_or(ty.trim());
+    match kind.kind {
+        "OBJECT_KIND" => {
+            // Either way this has to name a *function*, not a call, so that an
+            // optional can hand it to `.map(…)`. `from_ids` is a free function
+            // and takes a turbofish; the trait method cannot, so it stays
+            // qualified.
+            let rebuild = match unwrap_list(ty) {
+                Some(element) => format!("::dagger::from_ids::<{element}>"),
+                None => format!("<{ty} as ::dagger::ObjectId>::from_id"),
+            };
+            if kind.optional {
+                format!("{read}.map({rebuild})")
+            } else {
+                format!("{rebuild}({read})")
+            }
+        }
+        // `from_member` is fallible where `from_id` is not, so an optional one
+        // cannot be a `map`: that would leave a `Result` inside the `Option` for
+        // the function to receive.
+        "ENUM_KIND" => {
+            let from_member = format!("<{ty} as ::dagger::EnumType>::from_member");
+            if kind.optional {
+                format!(
+                    "match {read} {{ ::core::option::Option::Some(member) => ::core::option::Option::Some({from_member}(&member)?), ::core::option::Option::None => ::core::option::Option::None }}"
+                )
+            } else {
+                format!("{from_member}(&{read})?")
+            }
+        }
+        _ => read,
+    }
+}
+
+/// The expression that encodes one field of `self` back into the state.
+///
+/// Reaches for the same `encode_*` functions the dispatch encodes a return
+/// with, so a field and a return of one type make the same round trip — and
+/// refuses the same kinds, since [`list_encoder`] is the one that decides what
+/// a list of each element kind becomes.
+///
+/// What varies is only how the value is held: a string, an object, an enum or a
+/// list is borrowed, a number or a flag is copied, and an `Option` is matched —
+/// which puts a reference in hand either way, hence the deref on the copied
+/// kinds.
+fn write_value(name: &str, kind: &Kind) -> Result<String, String> {
+    if kind.list {
+        return Ok(if kind.optional {
+            let encode = list_encoder(kind.kind, "*value")?;
+            optional_write(name, &encode)
+        } else {
+            list_encoder(kind.kind, &format!("self.{name}"))?
+        });
+    }
+
+    let (encoder, borrow, deref, question) = match kind.kind {
+        "STRING_KIND" => ("::dagger::encode_string", "&", "", ""),
+        "INTEGER_KIND" => ("::dagger::encode_int", "", "*", ""),
+        "FLOAT_KIND" => ("::dagger::encode_float", "", "*", ""),
+        "BOOLEAN_KIND" => ("::dagger::encode_bool", "", "*", ""),
+        // Fallible, unlike the others: reading a generated object's id runs the
+        // chain it was built from.
+        "OBJECT_KIND" => ("::dagger::encode_object", "&", "", "?"),
+        // An enum goes back as the member's name, which the value already
+        // carries — nothing to fetch, so nothing to fail.
+        "ENUM_KIND" => ("::dagger::encode_enum", "&", "", ""),
+        other => return Err(format!("cannot encode a field of kind {other}")),
+    };
+    Ok(if kind.optional {
+        optional_write(name, &format!("{encoder}({deref}value){question}"))
+    } else {
+        format!("{encoder}({borrow}self.{name}){question}")
+    })
+}
+
+/// Wrap a field's encoder in the match an `Option` needs.
+fn optional_write(name: &str, encode: &str) -> String {
+    format!(
+        "match &self.{name} {{ ::core::option::Option::Some(value) => {encode}, ::core::option::Option::None => ::dagger::encode_null() }}"
+    )
+}
+
+/// The bindings that read a function's arguments, and the call that uses them.
+fn call_expr(receiver: &str, f: &Function, enums: &Enums) -> Result<(String, String), String> {
+    let mut bindings = String::new();
+    let mut call_args = Vec::new();
+
+    for param in &f.params {
+        let kind = kind_of(&param.ty, enums)?;
+        let value = read_value("args", &camel_case(&param.name), &param.ty, &kind);
+        bindings.push_str(&format!("let {binding} = {value};", binding = param.name));
+        call_args.push(param.name.clone());
+    }
+
+    Ok((
+        bindings,
+        format!("{receiver}{fname}({args})", fname = f.name, args = call_args.join(", ")),
+    ))
+}
+
+/// Carry a fallible call's failure out as the message the engine shows.
+///
+/// The parentheses are what make either safe to interpolate: `?` binds tighter
+/// than the `&` an encoder takes, so `&(call)?` borrows the value rather than
+/// the `Result`.
+fn wrap_failure(call: String, failure: &Failure) -> String {
+    match failure {
+        Failure::None => call,
+        Failure::Message => format!("({call})?"),
+        Failure::GoError => format!("({call}).map_err(::dagger::error_message)?"),
+    }
 }
 
 /// How a returned list of `kind` is encoded.
@@ -1351,84 +1883,22 @@ fn list_encoder(kind: &str, call: &str) -> Result<String, String> {
 
 /// Render the `match` arm that calls one function and encodes its result.
 fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, String> {
-    let mut bindings = String::new();
-    let mut call_args = Vec::new();
-
-    for param in &f.params {
-        let kind = kind_of(&param.ty, enums)?;
-        let accessor = if kind.optional {
-            format!("{}_opt", kind.getter)
-        } else {
-            kind.getter.to_string()
-        };
-        let read = format!(
-            "args.{accessor}({name})?",
-            accessor = accessor,
-            name = quote_str(&camel_case(&param.name)),
-        );
-        // An object arrives as its ID and an enum as one of its member names, so
-        // neither is used as it lands: both are rebuilt through the trait that
-        // knows how. A list of objects arrives as a list of IDs and is rebuilt
-        // element by element, which is `from_ids` — the same trait, once per
-        // element. Naming the type the way the parameter does means it resolves
-        // in the user's scope, whatever they imported it from.
-        let ty = unwrap_option(&param.ty).unwrap_or(param.ty.trim());
-        let value = match kind.kind {
-            "OBJECT_KIND" => {
-                // Either way this has to name a *function*, not a call, so that
-                // an optional can hand it to `.map(…)`. `from_ids` is a free
-                // function and takes a turbofish; the trait method cannot, so
-                // it stays qualified.
-                let rebuild = match unwrap_list(ty) {
-                    Some(element) => format!("::dagger::from_ids::<{element}>"),
-                    None => format!("<{ty} as ::dagger::ObjectId>::from_id"),
-                };
-                if kind.optional {
-                    format!("{read}.map({rebuild})")
-                } else {
-                    format!("{rebuild}({read})")
-                }
-            }
-            // `from_member` is fallible where `from_id` is not, so an optional
-            // one cannot be a `map`: that would leave a `Result` inside the
-            // `Option` for the function to receive.
-            "ENUM_KIND" => {
-                let from_member = format!("<{ty} as ::dagger::EnumType>::from_member");
-                if kind.optional {
-                    format!(
-                        "match {read} {{ ::core::option::Option::Some(member) => ::core::option::Option::Some({from_member}(&member)?), ::core::option::Option::None => ::core::option::Option::None }}"
-                    )
-                } else {
-                    format!("{from_member}(&{read})?")
-                }
-            }
-            _ => read,
-        };
-        bindings.push_str(&format!("let {binding} = {value};", binding = param.name));
-        call_args.push(param.name.clone());
-    }
-
+    // The receiver is the object the engine's `parent` decoded to, taken by
+    // value: a builder that consumes `self` is as ordinary a signature as one
+    // that borrows it, and the receiver belongs to this one call either way.
     let receiver = if f.takes_self {
-        format!("{type_name}.")
+        "self.".to_string()
     } else {
         format!("{type_name}::")
     };
-    // A unit struct is its own value, so `MyModule.method(..)` is how a `&self`
-    // method is reached without the engine having constructed anything.
-    let call = format!("{receiver}{fname}({args})", fname = f.name, args = call_args.join(", "));
+    let (bindings, call) = call_expr(&receiver, f, enums)?;
     let (returns, failure) = return_type(f)?;
     let ret = kind_of(returns, enums)?;
 
     // `invoke` returns `Result<string, string>`, so a function that failed with
     // a message needs nothing but `?` on the way past, and one that failed with
-    // a goish `error` needs its message read off it first. The parentheses are
-    // what make either safe to interpolate: `?` binds tighter than the `&` an
-    // encoder takes, so `&(call)?` borrows the value rather than the `Result`.
-    let call = match failure {
-        Failure::None => call,
-        Failure::Message => format!("({call})?"),
-        Failure::GoError => format!("({call}).map_err(::dagger::error_message)?"),
-    };
+    // a goish `error` needs its message read off it first.
+    let call = wrap_failure(call, &failure);
 
     // An `Option<T>` is encoded by the kind inside it, or as JSON null — the one
     // encoding the engine reads back as "no value", and what `withOptional` on
@@ -1455,6 +1925,13 @@ fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, 
                 "INTEGER_KIND" => "::dagger::encode_int(__value)".to_string(),
                 "FLOAT_KIND" => "::dagger::encode_float(__value)".to_string(),
                 "BOOLEAN_KIND" => "::dagger::encode_bool(__value)".to_string(),
+                // The object's own type goes back as its state here too: the
+                // two halves of an `Option<Self>` are the same two answers as
+                // any other optional return, and only the `Some` one has a
+                // document to write.
+                "OBJECT_KIND" if ret.is_object(type_name) => {
+                    "::dagger::encode_state(&__value)?".to_string()
+                }
                 "OBJECT_KIND" => "::dagger::encode_object(&__value)?".to_string(),
                 // The member's name is already in the value, so nothing is
                 // fetched and nothing can fail — the `Some` arm needs no `?`.
@@ -1478,6 +1955,13 @@ fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, 
             "INTEGER_KIND" => format!("::dagger::encode_int({call})"),
             "FLOAT_KIND" => format!("::dagger::encode_float({call})"),
             "BOOLEAN_KIND" => format!("::dagger::encode_bool({call})"),
+            // The object's own type goes back as its state rather than as an
+            // id: the engine holds no value to mint one for, so what it keeps
+            // is the document the fields encode to. This is what lets a builder
+            // return `Self` and the caller go on chaining from it.
+            "OBJECT_KIND" if ret.is_object(type_name) => {
+                format!("::dagger::encode_state(&{call})?")
+            }
             // Fallible, unlike the others: reading a generated object's id runs
             // the chain the function built.
             "OBJECT_KIND" => format!("::dagger::encode_object(&{call})?"),

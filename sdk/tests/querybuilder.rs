@@ -821,6 +821,11 @@ fn TestAnEnumDeclaresItsMembers(t: &mut testing::T) {
 /// what `#[dagger::object]` emits for a signature naming it has to build and
 /// dispatch. Everything below reaches it without an engine, since neither the
 /// table nor the dispatch is a round trip.
+///
+/// It carries no state, which is why the attribute on the `struct` has nothing
+/// to read; it is still required, because that is the half of the declaration
+/// that says how the receiver is rebuilt. See `tests/state.rs`.
+#[dagger::object]
 struct EnumModule;
 
 #[dagger::object(enums(TargetOs))]
@@ -874,23 +879,23 @@ fn TestAModuleDeclaresTheEnumsItServes(t: &mut testing::T) {
 /// The dispatch reads a member name into a variant and writes one back — and
 /// says so when the name is not one the enum has.
 fn TestDispatchTurnsAMemberNameIntoAVariant(t: &mut testing::T) {
-    match EnumModule::invoke(&string("echoOs"), &arguments(&[("os", "\"Debian\"")])) {
+    match EnumModule.invoke(&string("echoOs"), &arguments(&[("os", "\"Debian\"")])) {
         Ok(encoded) => assert_string(t, "the encoded return", encoded, "\"Debian\""),
         Err(why) => t.Error(fmt::Sprintf!("echoOs: %s", why)),
     }
 
     // The optional one, supplied and omitted: what the function matched on was
     // a variant either way.
-    match EnumModule::invoke(&string("osLibc"), &arguments(&[("os", "\"Alpine\"")])) {
+    match EnumModule.invoke(&string("osLibc"), &arguments(&[("os", "\"Alpine\"")])) {
         Ok(encoded) => assert_string(t, "a supplied optional", encoded, "\"musl\""),
         Err(why) => t.Error(fmt::Sprintf!("osLibc: %s", why)),
     }
-    match EnumModule::invoke(&string("osLibc"), &arguments(&[("os", "null")])) {
+    match EnumModule.invoke(&string("osLibc"), &arguments(&[("os", "null")])) {
         Ok(encoded) => assert_string(t, "an omitted optional", encoded, "\"unset\""),
         Err(why) => t.Error(fmt::Sprintf!("osLibc: %s", why)),
     }
 
-    match EnumModule::invoke(&string("echoOs"), &arguments(&[("os", "\"PLAN9\"")])) {
+    match EnumModule.invoke(&string("echoOs"), &arguments(&[("os", "\"PLAN9\"")])) {
         Ok(encoded) => t.Error(fmt::Sprintf!("an unknown member dispatched to %s", encoded)),
         Err(why) => assert_contains(t, "an unknown member", why, "PLAN9"),
     }

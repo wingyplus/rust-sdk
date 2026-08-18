@@ -61,7 +61,22 @@ pub enum TargetOs {
 }
 
 /// A module exercising the whole Rust SDK surface.
-pub struct FeatureMatrix;
+///
+/// The fields are the object's state: `#[dagger::object]` on the `struct` is
+/// what declares them to the engine and what carries them from one call to the
+/// next. Every one of them is filled by the constructor below, and every
+/// constructor argument has a default — a check that calls any other function
+/// passes nothing, and the engine still has to build the object first.
+#[dagger::object]
+pub struct FeatureMatrix {
+    /// The greeting the state functions echo back.
+    pub greeting: string,
+    /// How many times `shout` repeats the greeting.
+    pub repeat: int,
+    /// Superseded by `greeting`.
+    #[dagger(deprecated = "use greeting instead")]
+    pub salutation: Option<string>,
+}
 
 /// Every Rust SDK feature the end-to-end suite asserts on.
 ///
@@ -72,6 +87,65 @@ pub struct FeatureMatrix;
 /// whatever else happened to be lying around.
 #[dagger::object(enums(TargetOs))]
 impl FeatureMatrix {
+    // ------------------------------------------------------------------- state
+
+    /// Configure the module.
+    ///
+    /// The constructor: the engine registers it under no name at all and runs
+    /// it before any function when the caller starts from the module, so its
+    /// arguments are the module's own flags — `dagger call --greeting=hi
+    /// shout`. Every one of them has a default, which is what keeps the rest of
+    /// this fixture callable with nothing.
+    #[dagger::constructor]
+    pub fn new(
+        #[dagger(default = "hello", doc = "What the state functions echo back")] greeting: string,
+        #[dagger(default = 1)] repeat: int,
+    ) -> FeatureMatrix {
+        FeatureMatrix {
+            greeting,
+            repeat,
+            salutation: None,
+        }
+    }
+
+    /// Repeat the configured greeting.
+    ///
+    /// Reads two fields the caller never passed to it: they came from the
+    /// constructor, through the document the engine kept.
+    #[dagger::function]
+    pub fn shout(&self) -> string {
+        let mut out = string("");
+        let mut i: int = 0;
+        while i < self.repeat {
+            out += self.greeting.clone();
+            i += 1;
+        }
+        out
+    }
+
+    /// Return a copy of this module with a different greeting.
+    ///
+    /// Returns the object's own type, which goes back as its *state* rather
+    /// than as an id — the engine holds no value to mint one for. Takes `self`
+    /// by value, which is the ordinary shape of a builder.
+    #[dagger::function]
+    pub fn with_greeting(self, greeting: string) -> Self {
+        FeatureMatrix { greeting, ..self }
+    }
+
+    /// Return a copy of this module that repeats one more time.
+    ///
+    /// Chains off `with_greeting`: two calls against one object is the whole
+    /// point of the state surviving, and neither of them mentions the other's
+    /// argument.
+    #[dagger::function]
+    pub fn louder(self) -> FeatureMatrix {
+        FeatureMatrix {
+            repeat: self.repeat + 1,
+            ..self
+        }
+    }
+
     // ---------------------------------------------------------------- declaration
 
     /// Return the argument, unchanged.

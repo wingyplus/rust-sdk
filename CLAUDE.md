@@ -174,14 +174,36 @@ caches hold source, not objects, and stay shared.
   never again. `sdk/src/querybuilder.rs` is at the crate root for exactly the
   same reason: the generated bindings are written *against* it, so it cannot
   live in what generation replaces.
-- **`sdk/tests/` is not vendored, and its `[[test]]` target is.**
+- **`sdk/tests/` is not vendored, and its `[[test]]` targets are.**
   `vendoredSdkFiles` in `mod.dang` ships `Cargo.toml` and `src/**/*.rs` and
-  nothing else, so a module gets a manifest naming a test target whose file it
-  does not have. That is fine — cargo only resolves a target's path when it
+  nothing else, so a module gets a manifest naming three test targets whose
+  files it does not have. That is fine — cargo only resolves a target's path when it
   builds that target, and a module never builds the SDK's tests — but it is
   fine by luck rather than by design, so it is checked: a consumer crate
   path-depending on a `tests/`-less copy builds clean. Don't add a `[[bin]]` or
   `[[example]]` to `sdk/Cargo.toml` on the same assumption without re-checking.
+- **`#[dagger::object]` goes on the `struct` *and* the `impl`, and neither half
+  can emit the other's.** An attribute macro sees only the item it is written
+  on: the `impl` block has no way to learn the field list, and the `struct` has
+  no way to learn the functions. So the two emit two traits — `ObjectState` from
+  the `struct` (the `FieldDef` table, `from_state`, `to_state`) and `Object`
+  from the `impl` (`NAME`, `DOC`, the functions, the constructor, `invoke`) —
+  and `Object: ObjectState` is what ties them. A `struct` that forgot the
+  attribute is a missing-trait error, which is why `ObjectState` carries a
+  `#[diagnostic::on_unimplemented]` saying where to put it. Don't try to fold
+  them into one trait; the description and source map come from the `impl`
+  block, which is why `StructDef` deliberately parses neither.
+
+  The same "one item at a time" limit is why `enums(...)` has to be repeated on
+  the `struct` when a *field* names an enum the module declares: nothing else
+  tells that half the name is not an engine object it has never heard of. A
+  module whose enums appear only in signatures writes it once, on the `impl`.
+- **A module object crosses the boundary as its state, an engine object as its
+  ID.** `encode_state` and `encode_object` are told apart in `dispatch_arm` by
+  one comparison — whether the returned object's name is the block's own type —
+  because that is all the macro can know: there is no schema to look a name up
+  in. `Self` is spelled out in `parse_impl` before anything downstream asks, so
+  `Self` and `Build` are one declaration rather than two code paths.
 - **An object type in a signature is matched by shape, not by lookup.** The
   macros have no schema to check a name against — the schema belongs to the
   engine the module will run against — so anything spelled as a plain type name
@@ -294,8 +316,14 @@ than only in the profiles, because cargo ignores `panic` for the test profile
 and goish cannot unwind. And a new test has to be added to the list in `main`,
 or it silently never runs.
 
-The SDK crate's own suite — the query builder in `sdk/src/querybuilder.rs` —
-and the bindings generator's suite run the same way, under the same rules:
+The SDK crate's own suite and the bindings generator's run the same way, under
+the same rules. `sdk/` has three targets: `tests/querybuilder.rs` for the
+selection machinery, `tests/module.rs` for the values the module protocol
+decodes and encodes, and `tests/state.rs` — the one place in the repository
+where what the attribute macros *emit* is compiled and then run, because the
+object it declares is written exactly as a module's would be. Anything about
+state, a constructor or dispatch that can be shown without an engine belongs
+there rather than in an end-to-end check.
 
 ```sh
 cd sdk && cargo test

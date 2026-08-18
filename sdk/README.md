@@ -49,6 +49,13 @@ for one signature. They cannot cover the parsing, because the `proc_macro` API
 panics when called outside a macro expansion — the `Function` values they work
 from are built by hand rather than parsed.
 
+`sdk/`'s suite has three targets. `tests/querybuilder.rs` is the query builder
+and `tests/module.rs` the values the module protocol decodes and encodes;
+`tests/state.rs` is the one place in the repository where what the attribute
+macros *emit* is compiled and then run, because the object it declares is
+written exactly as a module's would be. Between them they cover the halves
+`macros/` cannot reach from the host.
+
 `cargo test` in `sdk/` exercises the query builder against a hand-written
 stand-in for generated code. It cannot exercise the *real* bindings, because the
 `src/gen/` in this repository is a placeholder. To do that, generate against a

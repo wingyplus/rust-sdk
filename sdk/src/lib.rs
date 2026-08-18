@@ -16,17 +16,30 @@
 //! The engine starts a module binary once per call, with the session's port and
 //! token in the environment, and expects it to talk GraphQL back over loopback:
 //!
-//! 1. Ask for `currentFunctionCall { parentName }`.
+//! 1. Ask for `currentFunctionCall { parentName name parent inputArgs }`.
 //! 2. When `parentName` is empty this is the *registration* call: build a
 //!    `Module` describing what the module serves and return its ID.
-//! 3. Otherwise it is an invocation: dispatch to the named function.
-//! 4. Either way, hand the result back through `returnValue`.
+//! 3. When the function `name` is empty this is the *constructor*: build the
+//!    object from the arguments and return its state.
+//! 4. Otherwise it is an invocation: decode `parent` into the receiver and
+//!    dispatch to the named function.
+//! 5. Either way, hand the result back through `returnValue`.
 //!
 //! # Status
 //!
 //! The protocol above runs end to end: [`serve`] registers what the module
-//! serves — its functions and their arguments, which of them are checks, and
-//! which are generators — and dispatches an incoming call.
+//! serves — its fields, its functions and their arguments, which of them are
+//! checks, and which are generators — and dispatches an incoming call.
+//!
+//! The root object carries state. `#[dagger::object]` goes on the `struct` as
+//! well as on the `impl`: on the `struct` it reads the `pub` fields and emits
+//! [`ObjectState`], which encodes them into the document the engine keeps and
+//! decodes them back into the receiver on the next call. A
+//! `#[dagger::constructor]` configures the object once — its arguments are the
+//! module's own flags — and a function returning `Self` hands back a
+//! reconfigured one, so `dagger call --image=alpine with-tag --tag=v1 publish`
+//! is three calls against one object rather than three copies of the same
+//! arguments.
 //!
 //! The other direction now exists too. [`gen`] is generated from the engine's
 //! own schema and is a full typed client: `dag().container()
@@ -93,9 +106,10 @@ pub use engine::{
 };
 pub use module::{
     encode_bool, encode_bool_list, encode_enum, encode_float, encode_float_list, encode_int,
-    encode_int_list, encode_null, encode_object, encode_object_list, encode_string,
+    encode_int_list, encode_null, encode_object, encode_object_list, encode_state, encode_string,
     encode_string_list, encode_void, error_message, from_ids, serve, ArgDef, Arguments, EnumDef,
-    EnumMemberDef, EnumType, FunctionDef, Object, SourceMapDef,
+    EnumMemberDef, EnumType, FieldDef, FunctionDef, Object, ObjectState, SourceMapDef, State,
+    StateWriter,
 };
 pub use objects::{Changeset, ObjectId, Workspace};
 pub use querybuilder::{
@@ -103,8 +117,9 @@ pub use querybuilder::{
     SubList, SubOpt, ToArg,
 };
 
-/// Declare a module's root object, the functions it serves, and its enums.
-pub use dagger_macros::{check, enum_type, function, object};
+/// Declare a module's root object, its state, its enums, and the functions it
+/// serves.
+pub use dagger_macros::{check, constructor, enum_type, function, object};
 
 use goish::encoding::json;
 use goish::{bytes, nil, os, string};

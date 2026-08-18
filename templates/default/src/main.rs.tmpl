@@ -13,13 +13,32 @@
 
 use goish::{fmt, string};
 
+// `#[dagger::object]` goes on both halves of the object: on the struct it
+// declares the state, on the impl below the functions. A `pub` field here is
+// state the engine carries from one call to the next, and a
+// `#[dagger::constructor]` is what fills it in:
+//
+//     #[dagger::object]
+//     pub struct {{ .ModuleType }} {
+//         /// The image every function runs in.
+//         pub image: string,
+//     }
+//
+//     #[dagger::constructor]
+//     pub fn new(#[dagger(default = "alpine:3.21")] image: string) -> Self {
+//         {{ .ModuleType }} { image }
+//     }
+//
+// The constructor's arguments become the module's own flags, so they are
+// written before the function: `dagger call --image=rust:1.90 container-echo`.
 /// A generated module for {{ .ModuleType }} functions.
+#[dagger::object]
 pub struct {{ .ModuleType }};
 
 // The `///` below is the module description: `dagger functions` and
 // `dagger call --help` show it. It has to sit on the `impl` block, because
-// that is the item `#[dagger::object]` is handed — the one on the struct
-// above is only for `cargo doc`.
+// that is the item the engine is told about — the one on the struct above is
+// only for `cargo doc`.
 /// A generated module for {{ .ModuleType }} functions.
 #[dagger::object]
 impl {{ .ModuleType }} {

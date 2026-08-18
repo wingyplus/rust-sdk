@@ -18,10 +18,12 @@
 //! tokens. What is in reach is the type mapping, which is where a signature
 //! turns into a `FunctionDef`.
 
-use crate::parse::{variant_of, Enum, Function, ImplBlock, Param, SourceLoc, Variant};
+use crate::parse::{
+    variant_of, Enum, Function, ImplBlock, Param, SourceLoc, StructDef, StructField, Variant,
+};
 use crate::{
     camel_case, dispatch_arm, enum_defs, enum_impl, function_def, function_def_with,
-    is_generator_return, kind_of, object_impl, source_map_def, Enums, FunctionOptions,
+    is_generator_return, kind_of, object_impl, source_map_def, state_impl, Enums, FunctionOptions,
 };
 
 /// A parameter with no `#[dagger(...)]` options.
@@ -265,7 +267,7 @@ fn a_returned_object_is_encoded_as_its_id() {
 
     let arm = dispatch_arm("Build", &f, &Enums::default()).expect("a Container return dispatches");
     assert!(
-        arm.contains("::dagger::encode_object(&Build.base())?"),
+        arm.contains("::dagger::encode_object(&self.base())?"),
         "encoded as its id, fallibly: {arm}"
     );
 }
@@ -292,7 +294,7 @@ fn a_list_argument_and_return_are_declared_as_lists() {
         "read as one list: {arm}"
     );
     assert!(
-        arm.contains("::dagger::encode_string_list(&Build.tags(names))"),
+        arm.contains("::dagger::encode_string_list(&self.tags(names))"),
         "encoded as a list: {arm}"
     );
 }
@@ -319,7 +321,7 @@ fn a_list_of_floats_uses_the_float_accessor_and_encoder() {
         "read with the float list accessor: {arm}"
     );
     assert!(
-        arm.contains("::dagger::encode_float_list(&Build.halved(numbers))"),
+        arm.contains("::dagger::encode_float_list(&self.halved(numbers))"),
         "encoded with the float list encoder: {arm}"
     );
 }
@@ -348,7 +350,7 @@ fn a_list_of_objects_goes_through_its_ids() {
     // Fallible for the reason a single object's is: each element's id is a
     // round trip.
     assert!(
-        arm.contains("::dagger::encode_object_list(&Build.mount(dirs))?"),
+        arm.contains("::dagger::encode_object_list(&self.mount(dirs))?"),
         "encoded as ids, fallibly: {arm}"
     );
 }
@@ -459,7 +461,7 @@ fn an_optional_return_encodes_none_as_null() {
             .unwrap_or_else(|e| panic!("{ty}: {e}"));
         assert!(
             arm.contains(&format!(
-                "match Build.maybe() {{ ::core::option::Option::Some(__value) => {some}, ::core::option::Option::None => ::dagger::encode_null() }}"
+                "match self.maybe() {{ ::core::option::Option::Some(__value) => {some}, ::core::option::Option::None => ::dagger::encode_null() }}"
             )),
             "`{ty}` encodes both halves: {arm}"
         );
@@ -475,7 +477,7 @@ fn a_fallible_optional_return_composes_both() {
     let arm =
         dispatch_arm("Build", &f, &Enums::default()).expect("a fallible optional return dispatches");
     assert!(
-        arm.contains("match (Build.maybe())? { ::core::option::Option::Some(__value) => ::dagger::encode_string(&__value), ::core::option::Option::None => ::dagger::encode_null() }"),
+        arm.contains("match (self.maybe())? { ::core::option::Option::Some(__value) => ::dagger::encode_string(&__value), ::core::option::Option::None => ::dagger::encode_null() }"),
         "the `?` is inside the scrutinee: {arm}"
     );
 
@@ -590,23 +592,23 @@ fn a_fallible_return_is_declared_by_its_ok_type() {
 #[test]
 fn a_fallible_return_is_passed_through_with_a_question_mark() {
     for (ty, encoded) in [
-        ("Result<string, string>", "::dagger::encode_string(&(Build.attempt())?)"),
-        ("Result<int, string>", "::dagger::encode_int((Build.attempt())?)"),
-        ("Result<f64, string>", "::dagger::encode_float((Build.attempt())?)"),
-        ("Result<bool, string>", "::dagger::encode_bool((Build.attempt())?)"),
-        ("Result<(), string>", "{ (Build.attempt())?; ::dagger::encode_void() }"),
+        ("Result<string, string>", "::dagger::encode_string(&(self.attempt())?)"),
+        ("Result<int, string>", "::dagger::encode_int((self.attempt())?)"),
+        ("Result<f64, string>", "::dagger::encode_float((self.attempt())?)"),
+        ("Result<bool, string>", "::dagger::encode_bool((self.attempt())?)"),
+        ("Result<(), string>", "{ (self.attempt())?; ::dagger::encode_void() }"),
         // Two `?`s, and they are different failures: the inner one is the
         // function's own, the outer is resolving the object it returned.
-        ("Result<Container, string>", "::dagger::encode_object(&(Build.attempt())?)?"),
+        ("Result<Container, string>", "::dagger::encode_object(&(self.attempt())?)?"),
         // A goish `error` is a value, not a message, so it is read through the
         // helper — `Error()` inline would panic on the nil one.
         (
             "Result<string, error>",
-            "::dagger::encode_string(&(Build.attempt()).map_err(::dagger::error_message)?)",
+            "::dagger::encode_string(&(self.attempt()).map_err(::dagger::error_message)?)",
         ),
         (
             "Result<(), goish::error>",
-            "{ (Build.attempt()).map_err(::dagger::error_message)?; ::dagger::encode_void() }",
+            "{ (self.attempt()).map_err(::dagger::error_message)?; ::dagger::encode_void() }",
         ),
     ] {
         let f = function("attempt", Vec::new(), ty);
@@ -781,7 +783,7 @@ fn a_float_argument_and_return_use_the_float_accessor_and_encoder() {
         "read with the float accessor: {arm}"
     );
     assert!(
-        arm.contains("::dagger::encode_float(Build.scale(factor))"),
+        arm.contains("::dagger::encode_float(self.scale(factor))"),
         "encoded with the float encoder: {arm}"
     );
 }
@@ -917,7 +919,7 @@ fn enum_arguments_and_returns_go_through_from_member() {
         "read as a member name: {arm}"
     );
     assert!(
-        arm.contains("::dagger::encode_enum(&Build.build(os))"),
+        arm.contains("::dagger::encode_enum(&self.build(os))"),
         "returned as a member name: {arm}"
     );
 }
@@ -1028,4 +1030,268 @@ fn names_are_camel_cased_for_the_api() {
     ] {
         assert_eq!(camel_case(rust), api, "camelCase of `{rust}`");
     }
+}
+
+// ─── state ────────────────────────────────────────────────────────────
+
+/// A `pub` field with no `#[dagger(...)]` options.
+fn field(name: &str, ty: &str) -> StructField {
+    StructField {
+        name: name.to_string(),
+        ty: ty.to_string(),
+        doc: String::new(),
+        attrs: Vec::new(),
+        is_pub: true,
+        source: SourceLoc::unknown(),
+    }
+}
+
+/// A struct with no fields and one with several, for the tests below.
+fn struct_def(fields: Vec<StructField>) -> StructDef {
+    StructDef {
+        type_name: "Build".to_string(),
+        fields,
+    }
+}
+
+/// Every `pub` field becomes a `FieldDef`, camelCased and mapped through the
+/// same table an argument is — a field and an argument of one type are the same
+/// declaration seen from either side of the call.
+#[test]
+fn fields_become_field_defs() {
+    let generated = state_impl(&struct_def(vec![
+        field("image", "string"),
+        field("jobs", "int"),
+        field("with_gpu", "bool"),
+        field("tag", "Option<string>"),
+        field("source", "gen::Directory"),
+        field("tags", "slice<string>"),
+    ]), &Enums::default())
+    .expect("a struct with fields is supported");
+
+    for want in [
+        r#"name: "image", kind: "STRING_KIND", type_name: "", list: false, optional: false"#,
+        r#"name: "jobs", kind: "INTEGER_KIND", type_name: "", list: false, optional: false"#,
+        r#"name: "withGpu", kind: "BOOLEAN_KIND", type_name: "", list: false, optional: false"#,
+        r#"name: "tag", kind: "STRING_KIND", type_name: "", list: false, optional: true"#,
+        r#"name: "source", kind: "OBJECT_KIND", type_name: "Directory", list: false, optional: false"#,
+        r#"name: "tags", kind: "STRING_KIND", type_name: "", list: true, optional: false"#,
+    ] {
+        assert!(generated.contains(want), "declares {want}: {generated}");
+    }
+}
+
+/// The read and the write of one field are a pair: the accessor that decodes it
+/// out of the parent document and the encoder that puts it back have to agree,
+/// or a value changes on the way through rather than failing.
+#[test]
+fn a_field_is_read_and_written_by_its_kind() {
+    let generated = state_impl(&struct_def(vec![
+        field("image", "string"),
+        field("jobs", "int"),
+        field("tag", "Option<string>"),
+        field("source", "gen::Directory"),
+        field("mounts", "slice<gen::Directory>"),
+        field("tags", "slice<string>"),
+    ]), &Enums::default())
+    .expect("a struct with fields is supported");
+
+    for want in [
+        r#"image: state.string("image")?,"#,
+        r#"jobs: state.int("jobs")?,"#,
+        r#"tag: state.string_opt("tag")?,"#,
+        r#"source: <gen::Directory as ::dagger::ObjectId>::from_id(state.object("source")?),"#,
+        // A list of objects arrives as a list of ids and is rebuilt element by
+        // element, exactly as a list-typed argument is.
+        r#"mounts: ::dagger::from_ids::<gen::Directory>(state.object_list("mounts")?),"#,
+        r#"tags: state.string_list("tags")?,"#,
+        r#"__state.put("image", ::dagger::encode_string(&self.image));"#,
+        r#"__state.put("jobs", ::dagger::encode_int(self.jobs));"#,
+        r#"__state.put("source", ::dagger::encode_object(&self.source)?);"#,
+        r#"__state.put("mounts", ::dagger::encode_object_list(&self.mounts)?);"#,
+        r#"__state.put("tags", ::dagger::encode_string_list(&self.tags));"#,
+    ] {
+        assert!(generated.contains(want), "emits {want}: {generated}");
+    }
+    assert!(
+        generated.contains("::dagger::encode_null()"),
+        "an absent optional is written as null: {generated}"
+    );
+}
+
+/// A unit struct still declares an `ObjectState`, with nothing in it: that is
+/// what lets a module with no state be built from the empty document a
+/// top-level call carries.
+#[test]
+fn a_unit_struct_declares_no_fields() {
+    let generated = state_impl(&struct_def(Vec::new()), &Enums::default()).expect("a unit struct is supported");
+
+    assert!(
+        generated.contains("const FIELDS: &[::dagger::FieldDef] = &[];"),
+        "an empty field table: {generated}"
+    );
+    assert!(
+        generated.contains("::core::result::Result::Ok(Build {  })"),
+        "rebuilt from nothing: {generated}"
+    );
+}
+
+/// A private field would be state the engine never sees, and so state that does
+/// not survive the call it was set in. Refused by name rather than dropped the
+/// way Go drops an unexported field.
+#[test]
+fn a_private_field_is_refused() {
+    let mut private = field("cache", "bool");
+    private.is_pub = false;
+
+    let message = state_impl(&struct_def(vec![private]), &Enums::default()).expect_err("a private field is refused");
+    assert!(message.contains("Build.cache"), "names the field: {message}");
+    assert!(message.contains("`pub`"), "says what to do: {message}");
+}
+
+/// A field of the object's own type cannot exist — the type would contain
+/// itself — and letting it through would report that as an `ObjectId` bound
+/// rather than as the field it is.
+#[test]
+fn a_field_of_the_objects_own_type_is_refused() {
+    let message =
+        state_impl(&struct_def(vec![field("parent", "Build")]), &Enums::default()).expect_err("refused by name");
+    assert!(message.contains("own type"), "says why: {message}");
+}
+
+// ─── the constructor ──────────────────────────────────────────────────
+
+/// A `#[dagger::constructor]` method taking `params` and returning `return_ty`.
+fn constructor(params: Vec<Param>, return_ty: &str) -> Function {
+    Function {
+        name: "new".to_string(),
+        doc: String::new(),
+        source: SourceLoc::unknown(),
+        params,
+        return_ty: return_ty.to_string(),
+        takes_self: false,
+        markers: vec!["constructor".to_string()],
+        options: Vec::new(),
+    }
+}
+
+fn block(functions: Vec<Function>) -> ImplBlock {
+    ImplBlock {
+        type_name: "Build".to_string(),
+        doc: String::new(),
+        source: SourceLoc::unknown(),
+        functions,
+    }
+}
+
+/// The constructor is registered under the empty name, which is how the engine
+/// spells "this function builds the object" — and it is not one of the object's
+/// functions, or the module would serve one called `new` as well.
+#[test]
+fn a_constructor_is_registered_with_no_name() {
+    let generated = object_impl(&block(vec![constructor(
+        vec![param("image", "string")],
+        "Build",
+    )]), &Enums::default())
+    .expect("a constructor is supported");
+
+    assert!(
+        generated
+            .contains(r#"const CONSTRUCTOR: ::dagger::FunctionDef = ::dagger::FunctionDef { name: "","#),
+        "registered with no name: {generated}"
+    );
+    assert!(
+        generated.contains(r#"return_kind: "OBJECT_KIND", return_type_name: "Build""#),
+        "returns the object: {generated}"
+    );
+    assert!(
+        generated.contains("const FUNCTIONS: &[::dagger::FunctionDef] = &[];"),
+        "and is not one of the functions: {generated}"
+    );
+    assert!(
+        generated.contains(r#"let image = args.string("image")?;"#),
+        "reads its arguments like any other function: {generated}"
+    );
+    assert!(
+        generated.contains("::dagger::ObjectState::to_state(&Build::new(image))"),
+        "encodes what it built: {generated}"
+    );
+}
+
+/// A fallible constructor is declared by what it produces, the same rule a
+/// function's return follows, and the failure is carried out before the state
+/// is encoded.
+#[test]
+fn a_constructor_may_be_written_fallibly() {
+    let generated = object_impl(&block(vec![constructor(
+        Vec::new(),
+        "Result<Build, string>",
+    )]), &Enums::default())
+    .expect("a fallible constructor is supported");
+
+    assert!(
+        generated.contains("::dagger::ObjectState::to_state(&(Build::new())?)"),
+        "the `?` is inside the borrow: {generated}"
+    );
+}
+
+/// A constructor that does not build the object is refused by name, rather than
+/// as a type error somewhere inside the macro's own output.
+#[test]
+fn a_constructor_returning_something_else_is_refused() {
+    for ty in ["string", "Container", "Option<Build>", ""] {
+        let message = object_impl(&block(vec![constructor(Vec::new(), ty)]), &Enums::default())
+            .expect_err("a constructor must return the object");
+        assert!(
+            message.contains("must return `Build`"),
+            "says what it must return: {message}"
+        );
+    }
+}
+
+/// A constructor builds the object rather than being called on one, so a
+/// receiver is a contradiction.
+#[test]
+fn a_constructor_taking_self_is_refused() {
+    let mut f = constructor(Vec::new(), "Build");
+    f.takes_self = true;
+
+    let message = object_impl(&block(vec![f]), &Enums::default()).expect_err("a constructor takes no receiver");
+    assert!(message.contains("self"), "names the receiver: {message}");
+}
+
+/// The engine registers exactly one, so a second is refused here rather than
+/// silently replacing the first.
+#[test]
+fn a_second_constructor_is_refused() {
+    let mut second = constructor(Vec::new(), "Build");
+    second.name = "with_defaults".to_string();
+
+    let message = object_impl(&block(vec![constructor(Vec::new(), "Build"), second]), &Enums::default())
+        .expect_err("only one constructor is allowed");
+    assert!(
+        message.contains("second constructor"),
+        "says what happened: {message}"
+    );
+}
+
+/// The object's own type goes back as its state rather than as an id: the
+/// engine holds no value to mint one for. This is the one place `encode_state`
+/// and `encode_object` are told apart, and the name is the whole test.
+#[test]
+fn returning_the_objects_own_type_encodes_its_state() {
+    let f = function("with_tag", vec![param("tag", "string")], "Build");
+
+    let arm = dispatch_arm("Build", &f, &Enums::default()).expect("returning the object is supported");
+    assert!(
+        arm.contains("::dagger::encode_state(&self.with_tag(tag))?"),
+        "encoded as its state: {arm}"
+    );
+
+    let other = function("base", Vec::new(), "Container");
+    let arm = dispatch_arm("Build", &other, &Enums::default()).expect("returning an engine object is supported");
+    assert!(
+        arm.contains("::dagger::encode_object(&self.base())?"),
+        "an engine object is still encoded as its id: {arm}"
+    );
 }

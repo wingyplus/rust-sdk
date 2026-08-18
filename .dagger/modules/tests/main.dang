@@ -24,10 +24,16 @@ is here is the half of the SDK that is Rust, and that nothing else reaches:
   cannot show that the emitted surface compiles against a real schema, let alone
   that a query it builds comes back with the right answer.
 
+- `state` — the object's own data and its constructor. `sdk/tests/state.rs`
+  compiles and runs what the macros emit, but nothing there sends a query: only
+  a live engine shows that a constructor's arguments become the module's flags,
+  that a declared field is answered without the module running at all, and that
+  the document one call returns arrives as the next one's parent.
+
 - `verbs` — what `dagger check` and `dagger generate` see when they look at a
   Rust module.
 
-All four groups share one scaffolded module and one fixture, because each
+All five groups share one scaffolded module and one fixture, because each
 fixture is a full cargo build of goish and the whole generated surface. See
 `target.dang` for the lifecycle and why the fixture is injected when it is.
 """
@@ -63,6 +69,13 @@ type Tests {
   """
   pub objects: ObjectChecks! {
     ObjectChecks(harness: harness)
+  }
+
+  """
+  Checks for the object's own state and its constructor.
+  """
+  pub state: StateChecks! {
+    StateChecks(harness: harness)
   }
 
   """

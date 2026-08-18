@@ -1,0 +1,160 @@
+"""
+Checks for the object's state and its constructor.
+
+A module used to serve a unit struct: the dispatch named the type as a value,
+so there was nowhere to put configuration and nothing to carry it in. Now
+`#[dagger::object]` on the `struct` declares the fields, `serve` selects
+`currentFunctionCall.parent` and decodes it into the receiver, and a
+`#[dagger::constructor]` fills it in once for the whole call.
+
+Three things that only a live engine can show, and that `sdk/tests/state.rs`
+cannot: that a constructor's arguments really do become the module's own flags,
+that a declared field is answered by the engine without the module running at
+all, and that the document a function returns comes back as the next call's
+parent.
+"""
+type StateChecks {
+  let harness: TestHarness!
+
+  """
+  The constructor should supply its defaults when the caller passes nothing.
+
+  `shout` takes no arguments and reads two fields, so the value it returns can
+  only have come through the constructor and the parent document.
+  """
+  pub constructorDefaultsReachTheFunction(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonString(
+      ["shout"],
+      "hello",
+      "a function with no arguments should see the constructor's defaults",
+    )
+  }
+
+  """
+  A constructor argument should be spelled before the function, and reach it.
+
+  This is the whole point of a constructor: `--greeting` and `--repeat` are the
+  module's own flags rather than every function's, so they are written where
+  the module is named.
+  """
+  pub constructorArgumentsConfigureTheModule(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonString(
+      ["--greeting", "hi", "shout"],
+      "hi",
+      "a constructor argument should reach a function that never declared it",
+    )
+    target.assertJsonString(
+      ["--greeting", "hi", "--repeat", "3", "shout"],
+      "hihihi",
+      "two constructor arguments should reach one function",
+    )
+  }
+
+  """
+  A declared field should be readable directly.
+
+  `withField` is what makes this work, and it is not a function: the engine
+  answers out of the state the module handed back, so `greeting` is a selection
+  rather than a call. A field that was registered but never encoded — or encoded
+  under a name the typedef does not have — fails here and nowhere else.
+  """
+  pub fieldsAreReadableWithoutAFunction(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonString(
+      ["--greeting", "reachable", "greeting"],
+      "reachable",
+      "a pub field should be readable as a field of the module",
+    )
+  }
+
+  """
+  A function returning the object should hand back state the next call reads.
+
+  The return goes out through `encode_state` rather than `encode_object`: there
+  is no id for a module's own object, so what crosses is the document its fields
+  encode to. `with-greeting shout` is that document making the round trip — out
+  of one call, into the next one's `parent`.
+  """
+  pub returningTheObjectCarriesItsState(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonString(
+      ["with-greeting", "--greeting", "chained", "shout"],
+      "chained",
+      "a returned object should carry the field the function set",
+    )
+    target.assertJsonString(
+      ["with-greeting", "--greeting", "chained", "greeting"],
+      "chained",
+      "a returned object should be readable through its fields too",
+    )
+  }
+
+  """
+  Chained calls should each start from the last one's state.
+
+  `louder` never mentions the greeting and `with-greeting` never mentions the
+  count, so a value that survives both has been through the parent document
+  twice. A dispatch that rebuilt the object from an empty state instead would
+  answer the second call with the constructor's defaults, and the assertion
+  below is what tells the two apart.
+  """
+  pub stateSurvivesAChainOfCalls(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonString(
+      ["--greeting", "ha", "with-greeting", "--greeting", "he", "louder", "shout"],
+      "hehe",
+      "each call in a chain should start from the state the last one returned",
+    )
+  }
+
+  """
+  A field's deprecation and its doc comment should reach the schema.
+
+  Neither has a behavioural shadow, so the schema the module serves is the only
+  place to see whether `withField` was given them. `includeDeprecated: true` is
+  as load-bearing here as it is for a deprecated function: GraphQL hides a
+  deprecated field from introspection by default, so leaving it off looks
+  exactly like a macro that never declared it.
+
+  The doc half is asserted alongside because a field takes its description from
+  its `///` comment rather than from a `#[dagger(doc = ...)]`, unlike every
+  argument in this fixture — a field is state rather than an input, and Rust
+  does have doc comments on fields.
+  """
+  pub fieldMetadataIsDeclared(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+    let queried = target.query(
+      "{__type(name:\"FeatureMatrix\"){fields(includeDeprecated:true){name description deprecationReason}}}",
+    )
+
+    queried.assertStdoutContains(
+      "use greeting instead",
+      "a #[dagger(deprecated = ...)] field should reach the schema as its deprecationReason",
+    )
+    queried.assertStdoutContains(
+      "The greeting the state functions echo back.",
+      "a field's /// comment should become its description",
+    )
+  }
+
+  """
+  The constructor should be registered as the module's own arguments.
+
+  It is not one of the object's functions — the engine knows it by having no
+  name at all — so it surfaces on the *root* field that builds the module rather
+  than beside `shout` and `echo`. Asking the schema is what tells a constructor
+  that registered from one the macro emitted as an ordinary function called
+  `new`, which would answer `constructorArgumentsConfigureTheModule` above with
+  a flag parse error rather than a wrong value.
+  """
+  pub theConstructorIsRegisteredOnTheRootField(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+    let queried = target.query("{__schema{queryType{fields{name args{name}}}}}")
+
+    queried.assertStdoutContains(
+      "greeting",
+      "the constructor's arguments should be the module's root field's arguments",
+    )
+  }
+}
