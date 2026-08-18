@@ -24,6 +24,35 @@ type ObjectChecks {
   }
 
   """
+  A list of `Directory` arguments should reach the function, each one rebuilt.
+
+  A list of objects arrives as a list of *ids*, so the whole list goes through
+  `from_ids` — `ObjectId::from_id` once per element — before the function sees
+  it. Counting the entries of both directories is what shows each element
+  resolves on its own: a list that rebuilt only its first element would count
+  4 rather than 5.
+
+  The other direction is not called here, and cannot be: `dagger call` has no
+  spelling for chaining into an element of a list. `dirsOut` in the fixture
+  returns one anyway, so the `LIST_KIND`-wrapping-`OBJECT_KIND` typedef is
+  registered — and validated by the engine — every time this suite loads the
+  module. What `encode_object_list` writes is pinned in `sdk/tests/module.rs`.
+  """
+  pub acceptsAListOfDirectories(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+
+    harness.modTarget(ws).assertJsonOutput(
+      [
+        "count-all-entries",
+        "--dirs", target.modulePath + "/testdata",
+        "--dirs", target.modulePath + "/testdata/nested",
+      ],
+      "5",
+      "every element of a Directory list should be rebuilt from its id",
+    )
+  }
+
+  """
   `default_path` and `ignore` should load a contextual argument the caller never
   supplies, and filter it.
 

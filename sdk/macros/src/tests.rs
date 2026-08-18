@@ -37,6 +37,18 @@ fn param(name: &str, ty: &str) -> Param {
     }
 }
 
+/// The message `kind_of` refuses `ty` with.
+///
+/// Spelled out rather than reached for with `expect_err`, which wants a `Debug`
+/// on the `Ok` type: `Kind` has none, and deriving one for a test is a
+/// derive on the crate's own type for nobody's benefit.
+fn refusal(ty: &str) -> String {
+    match kind_of(ty) {
+        Ok(_) => panic!("`{ty}` should have been refused"),
+        Err(message) => message,
+    }
+}
+
 /// A `#[dagger::function]` method taking `params` and returning `return_ty`.
 fn function(name: &str, params: Vec<Param>, return_ty: &str) -> Function {
     Function {
@@ -116,20 +128,83 @@ fn option_wraps_any_kind() {
 /// of instead of failing here.
 #[test]
 fn only_plain_type_names_are_objects() {
-    for ty in [
-        "Vec<string>",
-        "slice<Directory>",
-        "& str",
-        "& Directory",
-        "[Directory]",
-        "lowercase",
-        "dyn Transport",
-    ] {
+    for ty in ["& str", "& Directory", "[Directory]", "lowercase", "dyn Transport"] {
         assert!(
             kind_of(ty).is_err(),
             "`{ty}` should not be taken for an engine object"
         );
     }
+
+    // A list *is* supported, but as a list of an object rather than as one:
+    // `Vec<Directory>` must never register a type called `Vec<Directory>`.
+    for ty in ["Vec<Directory>", "slice<Directory>"] {
+        let mapped = kind_of(ty).unwrap_or_else(|e| panic!("{ty}: {e}"));
+        assert!(mapped.list, "`{ty}` is a list");
+        assert_eq!(mapped.object, "Directory", "object name for `{ty}`");
+    }
+}
+
+/// A `slice<T>` or a `Vec<T>` is a list of `T`: the kind and the object name
+/// stay the element's, and the list is one flag on top.
+#[test]
+fn lists_carry_their_element_kind() {
+    for (ty, kind, object, getter) in [
+        ("slice<string>", "STRING_KIND", "", "string_list"),
+        ("Vec<string>", "STRING_KIND", "", "string_list"),
+        ("goish::slice<string>", "STRING_KIND", "", "string_list"),
+        ("slice<int>", "INTEGER_KIND", "", "int_list"),
+        ("slice<f64>", "FLOAT_KIND", "", "float_list"),
+        ("slice<float64>", "FLOAT_KIND", "", "float_list"),
+        ("slice<bool>", "BOOLEAN_KIND", "", "bool_list"),
+        ("slice<Directory>", "OBJECT_KIND", "Directory", "object_list"),
+        ("Vec<gen::Container>", "OBJECT_KIND", "Container", "object_list"),
+    ] {
+        let mapped = kind_of(ty).unwrap_or_else(|e| panic!("{ty}: {e}"));
+        assert!(mapped.list, "`{ty}` is a list");
+        assert!(!mapped.optional, "`{ty}` is not optional");
+        assert_eq!(mapped.kind, kind, "element kind of `{ty}`");
+        assert_eq!(mapped.object, object, "object name for `{ty}`");
+        assert_eq!(mapped.getter, getter, "getter for `{ty}`");
+    }
+}
+
+/// An `Option` outside the list makes the *list* optional, which is what the
+/// engine's `withOptional` on a `LIST_KIND` typedef means.
+#[test]
+fn an_option_around_a_list_makes_the_list_optional() {
+    for (ty, kind, getter) in [
+        ("Option<slice<string>>", "STRING_KIND", "string_list"),
+        ("Option<Vec<int>>", "INTEGER_KIND", "int_list"),
+        ("Option<slice<f64>>", "FLOAT_KIND", "float_list"),
+        ("Option<slice<Directory>>", "OBJECT_KIND", "object_list"),
+    ] {
+        let mapped = kind_of(ty).unwrap_or_else(|e| panic!("{ty}: {e}"));
+        assert!(mapped.list, "`{ty}` is a list");
+        assert!(mapped.optional, "`{ty}` is optional");
+        assert_eq!(mapped.kind, kind, "element kind of `{ty}`");
+        assert_eq!(mapped.getter, getter, "getter for `{ty}`");
+    }
+}
+
+/// The two list shapes that stop here, each refused by name rather than
+/// registered as something a call would then fail on.
+///
+/// A list of lists is one level too many — nothing below `kind_of` carries it,
+/// and the Dagger schema has none — and a list of optionals is a null element,
+/// which has no Rust shape a dispatch could hand the function.
+#[test]
+fn deeper_list_shapes_are_refused() {
+    let message = refusal("slice<slice<string>>");
+    assert!(
+        message.contains("a list goes one level deep"),
+        "says how deep a list goes: {message}"
+    );
+
+    let message = refusal("slice<Option<string>>");
+    assert!(
+        message.contains("Option<slice<T>>"),
+        "names what to write instead: {message}"
+    );
 }
 
 /// An object argument is declared to the engine by name, and rebuilt from the
@@ -140,7 +215,7 @@ fn object_arguments_are_rebuilt_from_their_id() {
 
     let def = function_def(&f).expect("a Directory argument is supported");
     assert!(
-        def.contains(r#"kind: "OBJECT_KIND", object: "Directory", optional: false"#),
+        def.contains(r#"kind: "OBJECT_KIND", object: "Directory", list: false, optional: false"#),
         "declared as an object: {def}"
     );
 
@@ -163,7 +238,7 @@ fn optional_object_arguments_are_rebuilt_only_when_present() {
 
     let def = function_def(&f).expect("an optional Directory is supported");
     assert!(
-        def.contains(r#"kind: "OBJECT_KIND", object: "Directory", optional: true"#),
+        def.contains(r#"kind: "OBJECT_KIND", object: "Directory", list: false, optional: true"#),
         "declared optional: {def}"
     );
 
@@ -192,6 +267,120 @@ fn a_returned_object_is_encoded_as_its_id() {
     assert!(
         arm.contains("::dagger::encode_object(&Build.base())?"),
         "encoded as its id, fallibly: {arm}"
+    );
+}
+
+/// A list crosses the boundary as one value in each direction: the accessor
+/// decodes the whole array, and the encoder writes it back.
+#[test]
+fn a_list_argument_and_return_are_declared_as_lists() {
+    let f = function("tags", vec![param("names", "slice<string>")], "slice<string>");
+
+    let def = function_def(&f).expect("a list of strings is supported");
+    assert!(
+        def.contains(r#"kind: "STRING_KIND", object: "", list: true, optional: false"#),
+        "declared as a list of strings: {def}"
+    );
+    assert!(
+        def.contains(r#"return_kind: "STRING_KIND", return_object: "", return_list: true"#),
+        "declared as a list return: {def}"
+    );
+
+    let arm = dispatch_arm("Build", &f).expect("a list of strings dispatches");
+    assert!(
+        arm.contains(r#"let names = args.string_list("names")?;"#),
+        "read as one list: {arm}"
+    );
+    assert!(
+        arm.contains("::dagger::encode_string_list(&Build.tags(names))"),
+        "encoded as a list: {arm}"
+    );
+}
+
+/// A list of floats reaches the float accessor and the float encoder, which are
+/// a pair: the integer ones next door would round the fraction away.
+#[test]
+fn a_list_of_floats_uses_the_float_accessor_and_encoder() {
+    let f = function("halved", vec![param("numbers", "slice<f64>")], "slice<f64>");
+
+    let def = function_def(&f).expect("a list of floats is supported");
+    assert!(
+        def.contains(r#"kind: "FLOAT_KIND", object: "", list: true"#),
+        "declared as a list of floats: {def}"
+    );
+    assert!(
+        def.contains(r#"return_kind: "FLOAT_KIND", return_object: "", return_list: true"#),
+        "declared as a float list return: {def}"
+    );
+
+    let arm = dispatch_arm("Build", &f).expect("a list of floats dispatches");
+    assert!(
+        arm.contains(r#"let numbers = args.float_list("numbers")?;"#),
+        "read with the float list accessor: {arm}"
+    );
+    assert!(
+        arm.contains("::dagger::encode_float_list(&Build.halved(numbers))"),
+        "encoded with the float list encoder: {arm}"
+    );
+}
+
+/// A list of objects is a list of IDs on the wire, so it is rebuilt element by
+/// element on the way in and resolved element by element on the way out.
+#[test]
+fn a_list_of_objects_goes_through_its_ids() {
+    let f = function(
+        "mount",
+        vec![param("dirs", "slice<gen::Directory>")],
+        "slice<Container>",
+    );
+
+    let def = function_def(&f).expect("a list of objects is supported");
+    assert!(
+        def.contains(r#"kind: "OBJECT_KIND", object: "Directory", list: true"#),
+        "declared as a list of Directory: {def}"
+    );
+
+    let arm = dispatch_arm("Build", &f).expect("a list of objects dispatches");
+    assert!(
+        arm.contains(r#"let dirs = ::dagger::from_ids::<gen::Directory>(args.object_list("dirs")?);"#),
+        "rebuilt from its ids: {arm}"
+    );
+    // Fallible for the reason a single object's is: each element's id is a
+    // round trip.
+    assert!(
+        arm.contains("::dagger::encode_object_list(&Build.mount(dirs))?"),
+        "encoded as ids, fallibly: {arm}"
+    );
+}
+
+/// An optional list is read through the `_opt` accessor, and a list of objects
+/// is rebuilt only when one arrived — the same shape a single optional object
+/// takes, with `from_ids` in place of `from_id`.
+#[test]
+fn an_optional_list_is_read_only_when_present() {
+    let f = function(
+        "tags",
+        vec![
+            param("names", "Option<slice<string>>"),
+            param("dirs", "Option<Vec<Directory>>"),
+        ],
+        "string",
+    );
+
+    let def = function_def(&f).expect("an optional list is supported");
+    assert!(
+        def.contains(r#"kind: "STRING_KIND", object: "", list: true, optional: true"#),
+        "the list is what is optional: {def}"
+    );
+
+    let arm = dispatch_arm("Build", &f).expect("an optional list dispatches");
+    assert!(
+        arm.contains(r#"let names = args.string_list_opt("names")?;"#),
+        "read through the optional accessor: {arm}"
+    );
+    assert!(
+        arm.contains(r#"args.object_list_opt("dirs")?.map(::dagger::from_ids::<Directory>)"#),
+        "rebuilt only when present: {arm}"
     );
 }
 
@@ -430,7 +619,7 @@ fn a_float_argument_and_return_use_the_float_accessor_and_encoder() {
 
     let def = function_def(&f).expect("a float argument is supported");
     assert!(
-        def.contains(r#"kind: "FLOAT_KIND", object: "", optional: false"#),
+        def.contains(r#"kind: "FLOAT_KIND", object: "", list: false, optional: false"#),
         "declared as a float: {def}"
     );
     assert!(
@@ -457,7 +646,7 @@ fn an_optional_float_argument_uses_the_optional_accessor() {
 
     let def = function_def(&f).expect("an optional float is supported");
     assert!(
-        def.contains(r#"kind: "FLOAT_KIND", object: "", optional: true"#),
+        def.contains(r#"kind: "FLOAT_KIND", object: "", list: false, optional: true"#),
         "declared optional: {def}"
     );
 
