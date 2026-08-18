@@ -33,6 +33,17 @@ name = "querybuilder"
 path = "tests/querybuilder.rs"
 harness = false
 
+# The second suite, on the same terms: `tests/` is not vendored into a module —
+# `vendoredSdkFiles` in mod.dang ships `Cargo.toml` and `src/**/*.rs` — so both
+# targets name a path a module does not have. Cargo only resolves a target's
+# path when it builds that target, and a module never builds the SDK's tests, so
+# one missing file or two makes no difference. A `[[bin]]` or an `[[example]]`
+# would not be so lucky; see the invariant in ../CLAUDE.md.
+[[test]]
+name = "module"
+path = "tests/module.rs"
+harness = false
+
 [dependencies]
 # Pinned by git rev: goish is not published to crates.io. The same rev is
 # pinned in templates/*/Cargo.toml.tmpl so cargo unifies the two into one

@@ -47,11 +47,15 @@
 //! [`fail`] would have written. That is what lets `?` carry a client failure out
 //! of a function, every generated method being fallible.
 //!
+//! A signature may be list-typed too: a `slice<T>` argument arrives as a JSON
+//! array — of scalars, or of the IDs a `slice<Directory>` is rebuilt from — and
+//! a returned one is encoded the same way. One level deep, and an `Option`
+//! wraps the list rather than its elements; see [`module`].
+//!
 //! What is still missing is the way back *in*: an argument of a client method
 //! that the schema types as `DirectoryID` is a `string` here, so handing an
 //! object to one goes through [`ObjectId::to_id`] rather than passing the
-//! object itself. Lists, in either direction, are not supported either. See the
-//! repository README.
+//! object itself. See the repository README.
 //!
 //! Hello
 
@@ -88,8 +92,9 @@ pub use engine::{
     SESSION_TOKEN_ENV,
 };
 pub use module::{
-    encode_bool, encode_float, encode_int, encode_object, encode_string, encode_void,
-    error_message, serve, ArgDef, Arguments, FunctionDef, Object, SourceMapDef,
+    encode_bool, encode_bool_list, encode_float, encode_float_list, encode_int, encode_int_list,
+    encode_object, encode_object_list, encode_string, encode_string_list, encode_void,
+    error_message, from_ids, serve, ArgDef, Arguments, FunctionDef, Object, SourceMapDef,
 };
 pub use objects::{Changeset, ObjectId, Workspace};
 pub use querybuilder::{

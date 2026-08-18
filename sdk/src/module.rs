@@ -24,7 +24,7 @@
 //! [`querybuilder`]: crate::querybuilder
 
 use goish::encoding::json;
-use goish::{int, nil, os, slice, strconv, string};
+use goish::{append, int, make, nil, os, slice, strconv, string};
 
 use crate::engine::{self, Session, Transport};
 use crate::querybuilder::{arg_list, arg_string, Args, Chain, Fields, FromJson, Leaf, ListField};
@@ -74,7 +74,15 @@ pub struct ArgDef {
     /// For `OBJECT_KIND`, the engine's name for the object — `Directory`,
     /// `Workspace`. Empty for every other kind.
     pub object: &'static str,
+    /// Whether the argument is a *list* of `kind` — `slice<T>` or `Vec<T>` in
+    /// the signature. The kind and object above describe the element, so a list
+    /// is one bool rather than a second copy of both.
+    pub list: bool,
     /// Whether the caller may leave it out — `Option<T>`, or anything with a default.
+    ///
+    /// Of the list, when [`list`](ArgDef::list) is set: the engine's
+    /// `withOptional` applies to whichever `TypeDef` it is called on, and
+    /// `Option<slice<T>>` makes the list optional, not its elements.
     pub optional: bool,
     /// From `#[dagger(doc = "...")]`. Rust has no doc comments on parameters.
     pub doc: &'static str,
@@ -101,6 +109,8 @@ pub struct FunctionDef {
     /// For an `OBJECT_KIND` return, the engine's name for the object —
     /// `Changeset`, `Container`. Empty for every other kind.
     pub return_object: &'static str,
+    /// Whether the function returns a *list* of `return_kind`.
+    pub return_list: bool,
     /// From `#[dagger::check]`: `dagger check` runs this function.
     pub is_check: bool,
     /// From `#[dagger::function(generate)]`: this function is a generator, so
@@ -188,6 +198,51 @@ impl Arguments {
 
     fn wrong_type(name: &str, expected: &str) -> string {
         string("argument ") + name + " is not " + expected
+    }
+
+    /// The same, for one element of a list.
+    ///
+    /// The index is the whole point: an argument's name says which argument
+    /// went wrong, and for a list that leaves the caller comparing their own
+    /// values against a message that fits any of them. `querybuilder` names the
+    /// index on the way in for the same reason.
+    fn wrong_element(name: &str, index: int, expected: &str) -> string {
+        string("argument ") + name + "[" + strconv::Itoa(index) + "] is not " + expected
+    }
+
+    /// An optional list argument, decoded element by element.
+    ///
+    /// The shape every list accessor below is written in terms of: `element`
+    /// decodes one JSON value, and yields `None` for a value of the wrong type,
+    /// which becomes the message naming its index. A list that is absent, and
+    /// one that arrived as JSON null, are both `None`; an *empty* list is a
+    /// list, so it is `Some` of nothing rather than absent.
+    fn list_opt<T>(
+        &self,
+        name: &str,
+        expected: &str,
+        element: impl Fn(&json::Value) -> Option<T>,
+    ) -> Result<Option<slice<T>>, string> {
+        let value = match self.lookup(name) {
+            None => return Ok(None),
+            Some(value) if value.IsNull() => return Ok(None),
+            Some(value) => value,
+        };
+        let items = match value.AsArray() {
+            Some(items) => items.clone(),
+            None => return Err(Arguments::wrong_type(name, "a list")),
+        };
+
+        let mut out = make!([]T, 0, items.Len());
+        let mut i: int = 0;
+        while i < items.Len() {
+            match element(&items[i]) {
+                Some(decoded) => out = append!(out, decoded),
+                None => return Err(Arguments::wrong_element(name, i, expected)),
+            }
+            i += 1;
+        }
+        Ok(Some(out))
     }
 
     /// A required string argument.
@@ -297,6 +352,79 @@ impl Arguments {
             },
         }
     }
+
+    /// A required list of strings.
+    pub fn string_list(&self, name: &str) -> Result<slice<string>, string> {
+        match self.string_list_opt(name)? {
+            Some(value) => Ok(value),
+            None => Err(Arguments::missing(name)),
+        }
+    }
+
+    /// An optional list of strings.
+    pub fn string_list_opt(&self, name: &str) -> Result<Option<slice<string>>, string> {
+        self.list_opt(name, "a string", |value| value.AsString().cloned())
+    }
+
+    /// A required list of integers.
+    pub fn int_list(&self, name: &str) -> Result<slice<int>, string> {
+        match self.int_list_opt(name)? {
+            Some(value) => Ok(value),
+            None => Err(Arguments::missing(name)),
+        }
+    }
+
+    /// An optional list of integers.
+    pub fn int_list_opt(&self, name: &str) -> Result<Option<slice<int>>, string> {
+        self.list_opt(name, "an integer", |value| value.AsNumber().map(|n| n as int))
+    }
+
+    /// A required list of floats.
+    pub fn float_list(&self, name: &str) -> Result<slice<goish::float64>, string> {
+        match self.float_list_opt(name)? {
+            Some(value) => Ok(value),
+            None => Err(Arguments::missing(name)),
+        }
+    }
+
+    /// An optional list of floats.
+    ///
+    /// The same JSON numbers [`int_list`](Arguments::int_list) reads, kept as
+    /// they arrived: this is the list accessor that does not narrow, the way
+    /// [`float_opt`](Arguments::float_opt) is the scalar one.
+    pub fn float_list_opt(&self, name: &str) -> Result<Option<slice<goish::float64>>, string> {
+        self.list_opt(name, "a number", |value| value.AsNumber())
+    }
+
+    /// A required list of booleans.
+    pub fn bool_list(&self, name: &str) -> Result<slice<bool>, string> {
+        match self.bool_list_opt(name)? {
+            Some(value) => Ok(value),
+            None => Err(Arguments::missing(name)),
+        }
+    }
+
+    /// An optional list of booleans.
+    pub fn bool_list_opt(&self, name: &str) -> Result<Option<slice<bool>>, string> {
+        self.list_opt(name, "a boolean", |value| value.AsBool())
+    }
+
+    /// A required list of objects, as the engine's IDs for them.
+    ///
+    /// The list counterpart of [`object`](Arguments::object): each element
+    /// arrives as an ID, and the generated dispatch rebuilds the whole list
+    /// with [`crate::from_ids`].
+    pub fn object_list(&self, name: &str) -> Result<slice<string>, string> {
+        match self.object_list_opt(name)? {
+            Some(value) => Ok(value),
+            None => Err(Arguments::missing(name)),
+        }
+    }
+
+    /// An optional list of objects, as the engine's IDs for them.
+    pub fn object_list_opt(&self, name: &str) -> Result<Option<slice<string>>, string> {
+        self.list_opt(name, "an object id", |value| value.AsString().cloned())
+    }
 }
 
 /// JSON-encode a string result.
@@ -342,6 +470,80 @@ pub fn encode_void() -> string {
 /// sent yet, and asking for its ID is what runs it.
 pub fn encode_object<T: crate::ObjectId>(value: &T) -> Result<string, string> {
     Ok(crate::json_string(&value.to_id()?))
+}
+
+/// JSON-encode a list, given an encoder for one element.
+///
+/// A returned list is the elements' own encoding inside `[…]`, so this is the
+/// three infallible list encoders below; the object one has its own loop,
+/// because resolving an id is a round trip and so cannot be written this way.
+fn encode_list<T>(values: &slice<T>, element: impl Fn(&T) -> string) -> string {
+    let mut out = string("[");
+    let mut i: int = 0;
+    while i < values.Len() {
+        if i > 0 {
+            out = out + ",";
+        }
+        out = out + element(&values[i]);
+        i += 1;
+    }
+    out + "]"
+}
+
+/// JSON-encode a list of strings.
+pub fn encode_string_list(values: &slice<string>) -> string {
+    encode_list(values, encode_string)
+}
+
+/// JSON-encode a list of integers.
+pub fn encode_int_list(values: &slice<int>) -> string {
+    encode_list(values, |value| encode_int(*value))
+}
+
+/// JSON-encode a list of floats.
+pub fn encode_float_list(values: &slice<goish::float64>) -> string {
+    encode_list(values, |value| encode_float(*value))
+}
+
+/// JSON-encode a list of booleans.
+pub fn encode_bool_list(values: &slice<bool>) -> string {
+    encode_list(values, |value| encode_bool(*value))
+}
+
+/// JSON-encode a list of objects as the engine's IDs for them.
+///
+/// Fallible for the reason [`encode_object`] is, once per element: each object
+/// is a chain nothing has sent yet, and asking for its ID is what runs it. So a
+/// list of *n* objects a function built is *n* round trips, and the first that
+/// fails is the message the caller gets.
+pub fn encode_object_list<T: crate::ObjectId>(values: &slice<T>) -> Result<string, string> {
+    let mut out = string("[");
+    let mut i: int = 0;
+    while i < values.Len() {
+        if i > 0 {
+            out = out + ",";
+        }
+        out = out + encode_object(&values[i])?;
+        i += 1;
+    }
+    Ok(out + "]")
+}
+
+/// Rebuild a list of objects from the IDs they arrived as.
+///
+/// The list counterpart of [`ObjectId::from_id`](crate::ObjectId::from_id), and
+/// what the generated dispatch calls for a `slice<Directory>` argument: the
+/// engine sends a list of IDs, and each becomes a client object that carries
+/// its own connection. Infallible, like the single-object case — nothing is
+/// sent until a field is asked for.
+pub fn from_ids<T: crate::ObjectId>(ids: slice<string>) -> slice<T> {
+    let mut out = make!([]T, 0, ids.Len());
+    let mut i: int = 0;
+    while i < ids.Len() {
+        out = append!(out, T::from_id(ids[i].clone()));
+        i += 1;
+    }
+    out
 }
 
 /// The message a goish [`error`](goish::error) carries, for a function that
@@ -497,7 +699,8 @@ fn register<T: Object>(transport: &dyn Transport) -> Result<string, string> {
 
 /// Build one `Function` and return its ID.
 fn build_function(transport: &dyn Transport, def: &FunctionDef) -> Result<string, string> {
-    let return_type = build_type_def(transport, def.return_kind, def.return_object, false)?;
+    let return_type =
+        build_type_def(transport, def.return_kind, def.return_object, def.return_list, false)?;
 
     let mut args = Args::new();
     args.put("name", arg_string(def.name));
@@ -541,7 +744,7 @@ fn build_function(transport: &dyn Transport, def: &FunctionDef) -> Result<string
     }
 
     for arg in def.args {
-        let arg_type = build_type_def(transport, arg.kind, arg.object, arg.optional)?;
+        let arg_type = build_type_def(transport, arg.kind, arg.object, arg.list, arg.optional)?;
         let mut args = Args::new();
         args.put("name", arg_string(arg.name));
         args.put("typeDef", arg_string(arg_type));
@@ -592,10 +795,16 @@ fn build_source_map(transport: &dyn Transport, def: &SourceMapDef) -> Result<str
 /// `object` names the engine object for `OBJECT_KIND` and is empty otherwise;
 /// an object is described by name rather than by kind, since the kind alone
 /// would not say which object it is.
+///
+/// A list is a `TypeDef` *wrapping* another one, so `list` makes `kind` and
+/// `object` describe the element: the element is built and resolved to an ID
+/// first, and `withListOf` takes that ID. `optional` then applies to the list
+/// rather than to the element, which is what `Option<slice<T>>` means.
 fn build_type_def(
     transport: &dyn Transport,
     kind: &'static str,
     object: &'static str,
+    list: bool,
     optional: bool,
 ) -> Result<string, string> {
     let mut args = Args::new();
@@ -611,6 +820,16 @@ fn build_type_def(
     } else {
         args.put("name", arg_string(object));
         type_def = type_def.field("withObject", args.finish());
+    }
+
+    if list {
+        // The one place a builder here needs an ID before it is finished: the
+        // element is an argument to `withListOf`, so the chain above has to be
+        // sent and resolved rather than extended.
+        let element = fetch_id(transport, &type_def)?;
+        let mut args = Args::new();
+        args.put("elementType", arg_string(element));
+        type_def = Chain::root().field("typeDef", string("")).field("withListOf", args.finish());
     }
 
     if optional {

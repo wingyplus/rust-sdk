@@ -541,6 +541,13 @@ fn json_string(value: &str) -> String {
 }
 
 /// A Rust type mapped onto the engine's TypeDefKind, plus its optionality.
+///
+/// For a list, [`kind`](Kind::kind) and [`object`](Kind::object) describe the
+/// *element* and [`optional`](Kind::optional) describes the list itself: the
+/// engine models a list as a `TypeDef` of `LIST_KIND` wrapping an element
+/// `TypeDef`, and `withOptional` applies to whichever of the two it is called
+/// on. So `Option<slice<string>>` is an optional list of strings, and that is
+/// the only place an `Option` may appear — see [`kind_of`].
 struct Kind {
     kind: &'static str,
     /// The engine's name for an `OBJECT_KIND`; empty for a scalar. Owned rather
@@ -548,6 +555,8 @@ struct Kind {
     /// engine knows can be named, so the set is the schema's, not this crate's.
     object: String,
     optional: bool,
+    /// Whether the value is a list of `kind`, from a `slice<T>` or a `Vec<T>`.
+    list: bool,
     /// The accessor on `Arguments` that yields this type.
     getter: &'static str,
 }
@@ -558,6 +567,27 @@ fn unwrap_option(ty: &str) -> Option<&str> {
         .strip_prefix("Option<")
         .and_then(|rest| rest.strip_suffix('>'))
         .map(|inner| inner.trim())
+}
+
+/// Strip one `slice<...>` or `Vec<...>` layer, returning the element type.
+///
+/// Both spellings name the same thing to the engine — a list of the element —
+/// so both are mapped, the latitude `kind_of` already gives `String` and `&str`
+/// alongside `string`. What the dispatch hands the function is goish's
+/// `slice<T>`, so a `Vec<T>` parameter still has to become one; what accepting
+/// the spelling buys is that the message its author gets is about that and not
+/// about lists being unsupported.
+///
+/// The wrapper may be spelled any way that resolves — `slice`, `goish::slice`,
+/// `alloc::vec::Vec` — so it is the last segment before the `<` that has to say
+/// so, the way [`split_result`] reads `Result`.
+fn unwrap_list(ty: &str) -> Option<&str> {
+    let inner = ty.trim().strip_suffix('>')?;
+    let open = inner.find('<')?;
+    match last_segment(&inner[..open]) {
+        "slice" | "Vec" => Some(inner[open + 1..].trim()),
+        _ => None,
+    }
 }
 
 /// The last segment of a path, so `dagger::Changeset` reads as `Changeset`.
@@ -678,12 +708,65 @@ fn is_object_name(ty: &str) -> bool {
 /// compile, naming the trait.
 ///
 /// [`ObjectId`]: ../dagger/trait.ObjectId.html
+///
+/// # Lists, and how far they go
+///
+/// A `slice<T>` or a `Vec<T>` is a list of `T`, and `T` is anything above: a
+/// list of strings, of ints, of floats, of bools, or of engine objects. **One
+/// level, and no further.** The engine's model would carry more — a `TypeDef` of
+/// `LIST_KIND` can wrap any other `TypeDef`, including another list — but
+/// nothing else here would: [`Arguments`] decodes a JSON array of scalars or of
+/// ids, and the encoders take a flat list. The Dagger schema has no nested list
+/// anywhere either, so `slice<slice<T>>` is refused by name rather than
+/// registered as something a call would then fail on.
+///
+/// `Option<slice<T>>` is an optional list: `withOptional` applies to the list
+/// the same way it applies to a scalar, so the caller may leave the whole
+/// argument out. `slice<Option<T>>` — a list whose *elements* may be null — is
+/// refused: the engine can express it, but a null element has no Rust shape
+/// here that a dispatch could hand the function, and no Dagger API returns one.
+///
+/// [`Arguments`]: ../dagger/struct.Arguments.html
 fn kind_of(ty: &str) -> Result<Kind, String> {
     let trimmed = ty.trim();
     if let Some(inner) = unwrap_option(trimmed) {
         let mut inner = kind_of(inner)?;
         inner.optional = true;
         return Ok(inner);
+    }
+    if let Some(element) = unwrap_list(trimmed) {
+        let element = kind_of(element)?;
+        if element.list {
+            return Err(format!(
+                "unsupported type `{trimmed}`: a list goes one level deep, so `slice<T>` of a scalar or of an engine object — a list of lists is not something the module protocol carries"
+            ));
+        }
+        if element.optional {
+            return Err(format!(
+                "unsupported type `{trimmed}`: the elements of a list are not optional, so write `Option<slice<T>>` for a list the caller may leave out"
+            ));
+        }
+        // Every element kind has an accessor and an encoder except Void, which
+        // is the absence of a value: `slice<()>` is a list of nothings.
+        let getter = match element.kind {
+            "STRING_KIND" => "string_list",
+            "INTEGER_KIND" => "int_list",
+            "FLOAT_KIND" => "float_list",
+            "BOOLEAN_KIND" => "bool_list",
+            "OBJECT_KIND" => "object_list",
+            _ => {
+                return Err(format!(
+                    "unsupported type `{trimmed}`: a list is of string, int, float, bool, or an engine object"
+                ))
+            }
+        };
+        return Ok(Kind {
+            kind: element.kind,
+            object: element.object,
+            optional: false,
+            list: true,
+            getter,
+        });
     }
     let (kind, getter) = match trimmed {
         "string" | "String" | "&str" => ("STRING_KIND", "string"),
@@ -703,18 +786,19 @@ fn kind_of(ty: &str) -> Result<Kind, String> {
             // object as far as the engine is concerned.
             if !is_object_name(other) {
                 return Err(format!(
-                    "unsupported type `{other}`: a function's arguments and return are string, int, float, bool, or an engine object named as a plain type — `Directory`, `Container`, `Workspace`. Lists and other generics are not supported yet"
+                    "unsupported type `{other}`: a function's arguments and return are string, int, float, bool, an engine object named as a plain type — `Directory`, `Container`, `Workspace` — or a `slice<T>` of one. Other generics are not supported"
                 ));
             }
             return Ok(Kind {
                 kind: "OBJECT_KIND",
                 object: last_segment(other).to_string(),
                 optional: false,
+                list: false,
                 getter: "object",
             });
         }
     };
-    Ok(Kind { kind, object: String::new(), optional: false, getter })
+    Ok(Kind { kind, object: String::new(), optional: false, list: false, getter })
 }
 
 /// `container_echo` -> `containerEcho`, matching the API's naming.
@@ -835,7 +919,9 @@ fn function_def_with(f: &Function, function_options: &FunctionOptions) -> Result
         // means are known here, so the message can name the parameter instead.
         if !options.default_path.is_empty() || !options.ignore.is_empty() {
             let which = if options.default_path.is_empty() { "ignore" } else { "default_path" };
-            if kind.object != "Directory" && kind.object != "File" {
+            // A list of them is no good either: the engine loads one contextual
+            // value per argument, so `slice<Directory>` has nowhere to put it.
+            if kind.list || (kind.object != "Directory" && kind.object != "File") {
                 return Err(format!(
                     "`{which}` on `{}` applies only to Directory and File arguments, and `{}` is `{}`",
                     param.name, param.name, param.ty
@@ -882,10 +968,11 @@ fn function_def_with(f: &Function, function_options: &FunctionOptions) -> Result
             .join(", ");
 
         args.push_str(&format!(
-            "::dagger::ArgDef {{ name: {name}, kind: {kind}, object: {object}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated}, source: {source} }},",
+            "::dagger::ArgDef {{ name: {name}, kind: {kind}, object: {object}, list: {list}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated}, source: {source} }},",
             name = quote_str(&camel_case(&param.name)),
             kind = quote_str(kind.kind),
             object = quote_str(&kind.object),
+            list = kind.list,
             optional = optional,
             doc = quote_str(&options.doc),
             default = quote_str(&options.default_value),
@@ -904,7 +991,7 @@ fn function_def_with(f: &Function, function_options: &FunctionOptions) -> Result
     // The other half of the generator contract: `dagger generate` applies what
     // the function returns, so a generator returns the changes it made —
     // directly, or as `Result<Changeset, string>`.
-    if function_options.generate && (ret.object != "Changeset" || ret.optional) {
+    if function_options.generate && (ret.object != "Changeset" || ret.optional || ret.list) {
         return Err(format!(
             "`{}` is a generate function, so it must return `Changeset`, but it returns `{}`",
             f.name,
@@ -913,17 +1000,36 @@ fn function_def_with(f: &Function, function_options: &FunctionOptions) -> Result
     }
 
     Ok(format!(
-        "::dagger::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_object: {ret_object}, is_check: {is_check}, generator: {generator}, deprecated: {deprecated}, source: {source}, args: &[{args}] }},",
+        "::dagger::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_object: {ret_object}, return_list: {ret_list}, is_check: {is_check}, generator: {generator}, deprecated: {deprecated}, source: {source}, args: &[{args}] }},",
         name = quote_str(&camel_case(&f.name)),
         doc = quote_str(&f.doc),
         ret = quote_str(ret.kind),
         ret_object = quote_str(&ret.object),
+        ret_list = ret.list,
         is_check = f.has_marker("check"),
         generator = function_options.generate,
         deprecated = quote_str(&function_options.deprecated),
         source = source_map_def(&f.source),
         args = args,
     ))
+}
+
+/// How a returned list of `kind` is encoded.
+///
+/// One encoder per element kind, mirroring the scalars: the JSON a function
+/// hands back is an array of what the element encoder would have written on its
+/// own. The object one is fallible for the same reason `encode_object` is —
+/// reading an object's id runs the chain it was built from — and it is fallible
+/// once per element.
+fn list_encoder(kind: &str, call: &str) -> Result<String, String> {
+    Ok(match kind {
+        "STRING_KIND" => format!("::dagger::encode_string_list(&{call})"),
+        "INTEGER_KIND" => format!("::dagger::encode_int_list(&{call})"),
+        "FLOAT_KIND" => format!("::dagger::encode_float_list(&{call})"),
+        "BOOLEAN_KIND" => format!("::dagger::encode_bool_list(&{call})"),
+        "OBJECT_KIND" => format!("::dagger::encode_object_list(&{call})?"),
+        other => return Err(format!("cannot encode a returned list of kind {other}")),
+    })
 }
 
 /// Render the `match` arm that calls one function and encodes its result.
@@ -946,15 +1052,24 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
         // An object arrives as its ID, so it is rebuilt through the trait
         // rather than used directly. Naming the type the way the parameter does
         // means it resolves in the user's scope, whatever they imported it from.
+        // A list of them arrives as a list of IDs and is rebuilt element by
+        // element, which is `from_ids` — the same trait, once per element.
         let value = if kind.object.is_empty() {
             read
         } else {
             let ty = unwrap_option(&param.ty).unwrap_or(param.ty.trim());
-            let from_id = format!("<{ty} as ::dagger::ObjectId>::from_id");
+            // Either way this has to name a *function*, not a call, so that an
+            // optional can hand it to `.map(…)`. `from_ids` is a free function
+            // and takes a turbofish; the trait method cannot, so it stays
+            // qualified.
+            let rebuild = match unwrap_list(ty) {
+                Some(element) => format!("::dagger::from_ids::<{element}>"),
+                None => format!("<{ty} as ::dagger::ObjectId>::from_id"),
+            };
             if kind.optional {
-                format!("{read}.map({from_id})")
+                format!("{read}.map({rebuild})")
             } else {
-                format!("{from_id}({read})")
+                format!("{rebuild}({read})")
             }
         };
         bindings.push_str(&format!("let {binding} = {value};", binding = param.name));
@@ -997,6 +1112,9 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
     };
 
     let encode = match ret.kind {
+        // A list is encoded by its element kind, one encoder each, so this is a
+        // guard in front of the scalar arms rather than four more of them.
+        _ if ret.list => list_encoder(ret.kind, &call)?,
         "VOID_KIND" => format!("{{ {call}; ::dagger::encode_void() }}"),
         "STRING_KIND" => format!("::dagger::encode_string(&{call})"),
         "INTEGER_KIND" => format!("::dagger::encode_int({call})"),

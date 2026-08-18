@@ -75,6 +75,71 @@ type DeclarationChecks {
   }
 
   """
+  A list should cross the boundary in both directions.
+
+  The caller repeats the flag — `--values a --values b` — and what arrives is
+  one JSON array, decoded element by element; what goes back is another. Every
+  element kind that has its own accessor and its own encoder is here, because
+  the string one passing says nothing about the integer or the float one — and
+  the float is halved rather than echoed, so the encoder is shown on a value
+  the caller did not spell.
+
+  The empty list is the third case rather than an edge of the first two: it is
+  where "no elements" and "no argument" could be confused, and `[]` rather than
+  `null` is what a caller branches on.
+  """
+  pub listsCrossTheBoundary(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonListContains(
+      ["echo-list", "--values", "a", "--values", "b"],
+      "a",
+      "a repeated flag should arrive as the first element of the list",
+    )
+    target.assertJsonListContains(
+      ["echo-list", "--values", "a", "--values", "b"],
+      "b",
+      "a repeated flag should arrive as the second element of the list",
+    )
+
+    # Not `assertJsonListContains`, which looks for a *quoted* element: these
+    # are JSON numbers, so the quoted form would never match.
+    let doubled = target.tryCall(["doubled", "--numbers", "2", "--numbers", "3"])
+    doubled.assertSuccess
+    assert("a list of integers should decode and encode element by element") {
+      doubled.stdout.contains("4") and doubled.stdout.contains("6")
+    }
+
+    let halved = target.tryCall(["halved", "--numbers", "7", "--numbers", "5"])
+    halved.assertSuccess
+    assert("a list of floats should keep its fraction through the encoder") {
+      halved.stdout.contains("3.5") and halved.stdout.contains("2.5")
+    }
+
+    target.assertJsonListEmpty(["empty-list"], "an empty list should come back as []")
+  }
+
+  """
+  An `Option<slice<T>>` argument should be optional, and arrive as absent when
+  omitted.
+
+  The `Option` wraps the *list*, which is the only place it may appear around
+  one: the engine's `withOptional` applies to whichever typedef it is called on,
+  and a list whose elements may be null is refused by the macro rather than
+  declared. So this is `optionalArgumentsMayBeOmitted` again, one type further
+  out.
+  """
+  pub optionalListsMayBeOmitted(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonString(["optional-list"], "none")
+    target.assertJsonString(
+      ["optional-list", "--values", "x", "--values", "y"],
+      "some:x,y",
+    )
+  }
+
+  """
   A failing function should exit non-zero, and say why.
 
   `dagger::fail` writes to stderr and exits 2. The exit code is the half a

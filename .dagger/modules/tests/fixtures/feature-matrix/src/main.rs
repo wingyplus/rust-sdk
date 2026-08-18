@@ -40,7 +40,7 @@
 
 use dagger::gen::{self, dag};
 use dagger::ObjectId;
-use goish::{errors, fmt, int, slice, string, strings};
+use goish::{append, errors, fmt, int, make, slice, string, strings};
 
 /// A module exercising the whole Rust SDK surface.
 pub struct FeatureMatrix;
@@ -280,6 +280,73 @@ impl FeatureMatrix {
             .changes(before_id)
     }
 
+    // ---------------------------------------------------------------------- lists
+
+    /// Return the values, unchanged.
+    ///
+    /// A list in and a list out: the caller repeats the flag, the dispatch
+    /// decodes one JSON array, and the result goes back as another.
+    #[dagger::function]
+    pub fn echo_list(&self, values: slice<string>) -> slice<string> {
+        values
+    }
+
+    /// Return each number doubled.
+    ///
+    /// The other scalar element kind that is worth its own function: a list of
+    /// integers decodes through a different accessor and encodes through a
+    /// different encoder, and neither shares a line with the string one.
+    #[dagger::function]
+    pub fn doubled(&self, numbers: slice<int>) -> slice<int> {
+        let mut out = make!([]int, 0, numbers.Len());
+        let mut i: int = 0;
+        while i < numbers.Len() {
+            out = append!(out, numbers[i] * 2);
+            i += 1;
+        }
+        out
+    }
+
+    /// Halve every number.
+    ///
+    /// The float element kind, which is its own accessor and its own encoder
+    /// like the integer one — and worth halving rather than echoing, because
+    /// `7 / 2` is `3.5`, which the integer encoder next door would render as
+    /// `3`.
+    #[dagger::function]
+    pub fn halved(&self, numbers: slice<f64>) -> slice<f64> {
+        let mut out = make!([]f64, 0, numbers.Len());
+        let mut i: int = 0;
+        while i < numbers.Len() {
+            out = append!(out, numbers[i] / 2.0);
+            i += 1;
+        }
+        out
+    }
+
+    /// Return a list with nothing in it.
+    ///
+    /// `[]` and not `null`: an empty list is a list, and the difference is what
+    /// a caller branches on.
+    #[dagger::function]
+    pub fn empty_list(&self) -> slice<string> {
+        make!([]string, 0, 0)
+    }
+
+    /// Report the values, which the caller may leave out entirely.
+    ///
+    /// `Option<slice<T>>` is an optional *list*, which is the only place an
+    /// `Option` may appear around one: the engine's `withOptional` applies to
+    /// the list, and a list of optionals — `slice<Option<T>>` — is refused by
+    /// the macro.
+    #[dagger::function]
+    pub fn optional_list(&self, values: Option<slice<string>>) -> string {
+        match values {
+            Some(values) => string("some:") + self.join(values),
+            None => string("none"),
+        }
+    }
+
     // -------------------------------------------------------------------- objects
 
     /// List the fixture's test data, loaded from the module's context.
@@ -298,6 +365,38 @@ impl FeatureMatrix {
     #[dagger::function]
     pub fn count_entries(&self, dir: gen::Directory) -> int {
         dir.entries().unwrap_or_else(|m| dagger::fail(m)).Len()
+    }
+
+    /// Count the entries of every directory the caller passes.
+    ///
+    /// A list of engine objects arrives as a list of ids, and each is rebuilt
+    /// through `ObjectId::from_id` before the function sees it — the single
+    /// object argument above, once per element.
+    #[dagger::function]
+    pub fn count_all_entries(&self, dirs: slice<gen::Directory>) -> int {
+        let mut total: int = 0;
+        let mut i: int = 0;
+        while i < dirs.Len() {
+            total += dirs[i].entries().unwrap_or_else(|m| dagger::fail(m)).Len();
+            i += 1;
+        }
+        total
+    }
+
+    /// Return two directories, as objects rather than as text.
+    ///
+    /// The other direction, and the one nothing calls: `dagger call` has no
+    /// spelling for chaining into an element of a list, so what this exercises
+    /// is registration — a `LIST_KIND` typedef wrapping an `OBJECT_KIND` one,
+    /// which the engine validates when it loads the module, which is to say on
+    /// every check in this suite. `encode_object_list` itself is covered by
+    /// `sdk/tests/module.rs`.
+    #[dagger::function]
+    pub fn dirs_out(&self) -> slice<gen::Directory> {
+        let mut out = make!([]gen::Directory, 0, 2);
+        out = append!(out, dag().directory().with_new_file("a.txt", "a"));
+        out = append!(out, dag().directory().with_new_file("b.txt", "b"));
+        out
     }
 
     /// Return a container, as an object rather than as a string.
@@ -492,11 +591,12 @@ impl FeatureMatrix {
 
     /// Join a list the engine returned, so a function can return it as a scalar.
     ///
-    /// Unmarked, so it is invisible to `dagger call` and the macro never looks
-    /// at its signature — which is just as well, because a `slice<string>`
-    /// parameter is a compile error on anything the macro *does* declare.
-    /// Lists being unsupported in a module signature is exactly why the
-    /// list-typed *client* fields above are flattened before they are returned.
+    /// Unmarked, so it is invisible to `dagger call`. The client functions above
+    /// flatten their lists through this rather than returning them, which is
+    /// deliberate now that they could return them: what each of those checks is
+    /// about is the field it decodes, and a joined string keeps the assertion
+    /// off however a list happens to render. The list *surface* is checked by
+    /// the functions above that return one.
     fn join(&self, parts: slice<string>) -> string {
         strings::Join(parts, ",")
     }

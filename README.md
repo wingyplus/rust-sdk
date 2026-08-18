@@ -19,9 +19,9 @@ Backed by [`github.com/dagger/polyfill`](https://github.com/dagger/polyfill).
 > `dagger module init rust`, `dagger generate`, and `dagger call` against a
 > module's functions, which execute as a single static binary. The bindings for
 > the other direction are generated too, and reach a live engine; a function's
-> own signature may name engine objects as well as scalars. What is left is
-> narrower — lists in a signature, and handing an object straight to a client
-> method rather than as its id. See [Status](#status).
+> own signature may name engine objects and lists as well as scalars. What is
+> left is narrower — handing an object straight to a client method rather than
+> as its id, and an optional return. See [Status](#status).
 
 ## What's in here
 
@@ -217,8 +217,8 @@ held to.
 
 ### Supported types
 
-`string` (also `String`), `int`, `bool`, and `Option<T>` of each. A function
-returning nothing maps to `VOID_KIND`.
+`string` (also `String`), `int`, `float64` (also `f64`), `bool`, and
+`Option<T>` of each. A function returning nothing maps to `VOID_KIND`.
 
 Object types too: anything named as a plain type — `Directory`, `Container`,
 `Changeset`, `Workspace` — is declared to the engine as that object, under the
@@ -227,8 +227,23 @@ declaration. It has to be a type that implements `dagger::ObjectId`, which the
 generated bindings do for every object the engine has a loader for, so a
 misspelling is a compile error about that trait.
 
-Lists are not supported in either direction, and neither is an optional return.
-Both are compile errors naming what is unsupported.
+Lists of any of the above: `slice<T>` — or `Vec<T>`, which is the same
+declaration — as an argument or as a return. The caller repeats the flag,
+`--values a --values b`, and a list of objects crosses as a list of ids the way
+a single one does.
+
+```rust
+/// Return the values, unchanged.
+#[dagger::function]
+pub fn echo(&self, values: slice<string>) -> slice<string> {
+    values
+}
+```
+
+A list goes one level deep: `slice<slice<T>>` is a compile error, as is
+`slice<Option<T>>` — an `Option` goes *around* a list, `Option<slice<T>>`, which
+declares the list optional. An optional return is not supported either. Each is
+a compile error naming what to write instead.
 
 ### Failing
 
@@ -454,10 +469,10 @@ What is stubbed:
   a `Result` — so it is the query builder that would have to change, not the
   generator.
 
-- **Lists, and optional returns.** A function's arguments and return are one
-  value each: `slice<string>` in a signature, or `Option<T>` in return position,
-  are compile errors naming what is unsupported rather than confusing failures
-  further along.
+- **Optional returns.** `Option<T>` in return position is a compile error
+  naming what is unsupported rather than a confusing failure further along.
+  Lists are supported now, in both directions and one level deep; a list of
+  lists, and a list whose elements are optional, are refused the same way.
 
 Function declaration and dispatch **work**: `#[dagger::object]`,
 `#[dagger::function]` and `#[dagger::check]` read signatures at compile time and
