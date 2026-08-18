@@ -22,8 +22,8 @@
 #![allow(non_snake_case)]
 
 use dagger::{
-    encode_bool_list, encode_float_list, encode_int_list, encode_object_list, encode_string_list,
-    from_ids, Arguments, Changeset, ObjectId,
+    encode_bool_list, encode_float_list, encode_int_list, encode_module_object, encode_object_list,
+    encode_string_list, from_ids, Arguments, Changeset, ObjectId,
 };
 use goish::{append, float64, fmt, int, make, os, slice, string, testing};
 
@@ -283,6 +283,25 @@ fn TestAnObjectListIsEncodedAsItsIds(t: &mut testing::T) {
     }
 }
 
+/// The module's own object goes back as its state, which is `{}`.
+///
+/// Not an id, unlike every other object return: the engine has no loader for
+/// the object this module is *about*, and no `id` field to ask for — it learns
+/// the object exists when the module registers it. The state is what it hands
+/// back as the parent of the next call in the chain, and for the unit struct
+/// `#[dagger::object]` is written against there is nothing in it. The value is
+/// taken only so the function that produced it runs, so any type will do here.
+fn TestTheModuleObjectIsEncodedAsItsState(t: &mut testing::T) {
+    struct Build;
+
+    assert_string(
+        t,
+        "encode_module_object",
+        encode_module_object(&Build),
+        "{}",
+    );
+}
+
 #[goish::main]
 fn main() {
     let tests: &[(&str, testing::TestFn)] = &[
@@ -322,6 +341,10 @@ fn main() {
         (
             "TestAnObjectListIsEncodedAsItsIds",
             TestAnObjectListIsEncodedAsItsIds,
+        ),
+        (
+            "TestTheModuleObjectIsEncodedAsItsState",
+            TestTheModuleObjectIsEncodedAsItsState,
         ),
     ];
     os::Exit(testing::Main(tests));

@@ -362,6 +362,25 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// What is not supported is a list of lists, or an optional *element*
 /// (`slice<Option<T>>`); both are refused by name rather than emitted.
 ///
+/// The module's own object is the exception to all of that, and may be returned
+/// as `Self` or by name:
+///
+/// ```ignore
+/// #[dagger::function]
+/// pub fn itself(&self) -> Self { Build }   // dagger call itself image --base …
+/// ```
+///
+/// It is not an engine object: the engine has no loader for it and no `id` to
+/// ask for, because it only learns the object exists when this module registers
+/// it. So it needs no [`ObjectId`], and it does not cross the boundary as an id
+/// — what goes back is the object's *state*, `{}` for the unit struct this
+/// attribute is written against, which the engine hands back as the parent of
+/// the next call in the chain. That parent is `&self`, so the module's own
+/// object as an *argument* is a compile error, and so is a `slice` of it:
+/// `dagger call` has no spelling for chaining into a list element, which is the
+/// only thing returning it is for.
+///
+/// [`ObjectId`]: ../dagger/trait.ObjectId.html
 /// [`ObjectId::from_id`]: ../dagger/trait.ObjectId.html#tymethod.from_id
 #[proc_macro_attribute]
 pub fn object(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -1088,11 +1107,62 @@ fn expand(attr: TokenStream, item: TokenStream) -> Result<TokenStream, String> {
 
     // `check` is a marker of its own rather than an option on `function`, so a
     // method carrying only `#[dagger::check]` is still exported.
-    let block = parse::parse_impl(item, &["function", "check"])?;
+    let mut block = parse::parse_impl(item, &["function", "check"])?;
+    resolve_self_types(&mut block);
 
     object_impl(&block, &enums)?
         .parse()
         .map_err(|e| format!("generated code did not parse: {e}"))
+}
+
+/// Rewrite every `Self` in the block's signatures to the type it is an `impl`
+/// for.
+///
+/// The macro reads types as text and has no resolver, so `Self` would otherwise
+/// be declared to the engine as an object *named* `Self` — a type no schema has,
+/// and a module that fails to load with nothing pointing at the spelling that
+/// caused it. Substituting the block's own name here means one spelling of the
+/// module's own object reaches everything downstream instead of two, and the
+/// error messages below can name a real type.
+fn resolve_self_types(block: &mut parse::ImplBlock) {
+    let own = block.type_name.clone();
+    for f in &mut block.functions {
+        f.return_ty = substitute_self(&f.return_ty, &own);
+        for param in &mut f.params {
+            param.ty = substitute_self(&param.ty, &own);
+        }
+    }
+}
+
+/// Replace the identifier `Self` in a rendered type with `own`.
+///
+/// Whole identifiers only: a type called `SelfTest` is not a `Self`, and neither
+/// is the `Self` inside one. The type arrives as rendered token text, so this
+/// reaches `Self`, `Option < Self >` and `Result < Self , string >` alike
+/// without needing to know which wrapper it is looking at.
+fn substitute_self(ty: &str, own: &str) -> String {
+    fn is_ident(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_'
+    }
+
+    let bytes = ty.as_bytes();
+    let mut out = String::with_capacity(ty.len());
+    let mut i = 0;
+    while i < ty.len() {
+        let before_is_ident = i > 0 && is_ident(bytes[i - 1]);
+        let after_is_ident = bytes.get(i + 4).is_some_and(|b| is_ident(*b));
+        if ty[i..].starts_with("Self") && !before_is_ident && !after_is_ident {
+            out.push_str(own);
+            i += "Self".len();
+            continue;
+        }
+        // Byte-at-a-time would split a multi-byte character: a type is ASCII in
+        // practice, but a doc-shaped generic argument need not be.
+        let c = ty[i..].chars().next().expect("a char at a char boundary");
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
 }
 
 /// Render the `Object` impl for one parsed block, given the enums it declares.
@@ -1356,6 +1426,18 @@ fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, 
 
     for param in &f.params {
         let kind = kind_of(&param.ty, enums)?;
+        // The module's own object is not an engine object: it has no ID, so
+        // there is nothing for the engine to pass and nothing to rebuild from.
+        // It reaches a function as the *parent* of the call instead, which is
+        // `&self` — so a signature asking for one as an argument is asking for
+        // something the protocol has no room for.
+        if kind.is_object(type_name) {
+            return Err(format!(
+                "`{param}` is `{ty}`, the module's own object, which cannot be an argument: it crosses the boundary as the parent of a call rather than as an id, and that parent is `&self`",
+                param = param.name,
+                ty = param.ty.trim(),
+            ));
+        }
         let accessor = if kind.optional {
             format!("{}_opt", kind.getter)
         } else {
@@ -1430,6 +1512,20 @@ fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, 
         Failure::GoError => format!("({call}).map_err(::dagger::error_message)?"),
     };
 
+    // A list of the module's own object would be encoded as a list of ids, and
+    // it has none. The engine can carry such a list — it is a list of states —
+    // but nothing can call into an element of it: `dagger call` has no spelling
+    // for chaining into a list, which is the only thing returning the module's
+    // own object is for. So it is refused here rather than emitted as code that
+    // fails to typecheck inside the macro's own output. Ahead of the split
+    // below, since `Option<slice<Self>>` is no more chainable than `slice<Self>`.
+    if ret.list && ret.is_object(type_name) {
+        return Err(format!(
+            "`{}` returns a list of `{type_name}`, the module's own object; a list of it is not supported, and could not be chained into if it were",
+            f.name
+        ));
+    }
+
     // An `Option<T>` is encoded by the kind inside it, or as JSON null — the one
     // encoding the engine reads back as "no value", and what `withOptional` on
     // the return typedef promises it may get. `__value` cannot collide with
@@ -1449,6 +1545,11 @@ fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, 
     let encode = if ret.optional {
         let some = if ret.list {
             list_encoder(ret.kind, "__value")?
+        } else if ret.is_object(type_name) {
+            // The module's own object goes back as its state whether or not the
+            // return is optional; the `None` arm below is the same null any
+            // other absent return is.
+            "::dagger::encode_module_object(&__value)".to_string()
         } else {
             match ret.kind {
                 "STRING_KIND" => "::dagger::encode_string(&__value)".to_string(),
@@ -1473,6 +1574,12 @@ fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, 
             // is a guard in front of the scalar arms rather than four more of
             // them.
             _ if ret.list => list_encoder(ret.kind, &call)?,
+            // The module's own object, which goes back as its state rather than
+            // as an id — see `encode_module_object`. Ahead of the object arm
+            // below, which would ask it for an id it does not have.
+            _ if ret.is_object(type_name) => {
+                format!("::dagger::encode_module_object(&{call})")
+            }
             "VOID_KIND" => format!("{{ {call}; ::dagger::encode_void() }}"),
             "STRING_KIND" => format!("::dagger::encode_string(&{call})"),
             "INTEGER_KIND" => format!("::dagger::encode_int({call})"),

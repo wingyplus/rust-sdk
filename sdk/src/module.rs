@@ -594,6 +594,23 @@ pub fn encode_object<T: crate::ObjectId>(value: &T) -> Result<string, string> {
     Ok(crate::json_string(&value.to_id()?))
 }
 
+/// JSON-encode a return of the module's *own* object.
+///
+/// The one object type in a signature that is not an engine object, and so the
+/// one that cannot go back as an ID: the engine has no loader for it and no
+/// `id` field to ask for, because it only learns the object exists when this
+/// module registers it. What it expects instead is the object's *state*, which
+/// it hands straight back as the parent of the next call in the chain — so
+/// `itself` followed by `echo` is two calls into this binary, not one.
+///
+/// That state is `{}`. The object `#[dagger::object]` is written against is a
+/// unit struct with no fields to carry, which is also why this is infallible
+/// where [`encode_object`] is not: there is nothing to resolve, and the value
+/// is taken only so the function whose result it is actually runs.
+pub fn encode_module_object<T>(_value: &T) -> string {
+    string("{}")
+}
+
 /// JSON-encode a list, given an encoder for one element.
 ///
 /// A returned list is the elements' own encoding inside `[…]`, so this is the

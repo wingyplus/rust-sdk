@@ -227,6 +227,32 @@ declaration. It has to be a type that implements `dagger::ObjectId`, which the
 generated bindings do for every object the engine has a loader for, so a
 misspelling is a compile error about that trait.
 
+The module's own object too, written `Self` or spelled out, which is what lets a
+call chain into another of the module's functions:
+
+```rust
+/// Return this module itself.
+#[dagger::function]
+pub fn itself(&self) -> Self {
+    Build
+}
+```
+
+```console
+$ dagger call itself echo --string-arg hi
+hi
+```
+
+It is the one object in a signature that is *not* an engine object: the engine
+has no loader for it and no `id` to ask for, since it only learns the object
+exists when the module registers it. So it does not cross the boundary as an id
+— what goes back is the object's state, `{}` for the unit struct
+`#[dagger::object]` is written against, and the engine hands that back as the
+parent of the next call. That parent is `&self`, which is why the module's own
+object is a compile error as an *argument*, and why a `slice` of it is one too:
+`dagger call` cannot chain into a list element, which is the only thing
+returning it is for.
+
 Lists of any of the above: `slice<T>` — or `Vec<T>`, which is the same
 declaration — as an argument or as a return. The caller repeats the flag,
 `--values a --values b`, and a list of objects crosses as a list of ids the way
@@ -513,6 +539,14 @@ What works today:
   type. The engine is told what the function produces either way, and an `Err`
   reaches the caller as the message `dagger::fail` would have written. That is
   what makes `?` usable against a client whose every method is fallible.
+
+- Chaining into the module's own functions, by returning `Self` — `dagger call
+  itself echo --string-arg hi`. The module's own object is the one object in a
+  signature the engine has no loader for, so it crosses the boundary as its
+  state, `{}`, rather than as an id, and the engine hands that state back as the
+  parent of the next call. There is no `dag().my_module()` to go with it and
+  cannot be: the schema `codegen` generates from carries core plus the module's
+  dependencies, and nothing of the module itself.
 
 - Enums a module declares, with `#[dagger::enum_type]` on the enum and
   `#[dagger::object(enums(...))]` on the block that serves it — see [Supported

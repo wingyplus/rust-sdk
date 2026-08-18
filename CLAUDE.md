@@ -195,6 +195,21 @@ caches hold source, not objects, and stay shared.
   signature only works *after* `dagger generate`: `src/gen` is a placeholder
   until then, which is why the templates and the two wrappers in
   `sdk/src/objects.rs` stay on scalars and IDs.
+- **The module's own object is the one object type that is not an engine
+  object.** It has no `loadXFromID` and no `id` field, because the engine only
+  learns it exists when the module registers it — and it is not in the schema
+  `sdk/codegen` generates from either, which carries core plus the module's
+  *dependencies* and nothing of the module itself. (That is also why there is no
+  `dag().my_module()`: a self-call through the client is not something the
+  generate path could produce for any SDK.) What chaining rests on instead is
+  the return: `resolve_self_types` in `sdk/macros/src/lib.rs` rewrites `Self` to
+  the block's type name before anything downstream sees it — otherwise an object
+  called `Self` is declared and the module fails to load — and `dispatch_arm`
+  routes such a return to `encode_module_object`, which writes the object's
+  *state*, `{}`, rather than asking `ObjectId` for an id it cannot have. The
+  same type is refused in argument position, because the parent it would arrive
+  as is `&self`, and as a list element, because `dagger call` cannot chain into
+  one. `tests:objects:chains-into-itself` is the end-to-end check.
 - **An enum a module declares is told apart from an object by a list, and
   nothing else.** `#[dagger::enum_type]` emits the `EnumType` impl, but a macro
   sees one item at a time and Rust has no runtime reflection, so

@@ -536,6 +536,32 @@ impl FeatureMatrix {
             .with_exec(&["echo", "-n", "container-out"])
     }
 
+    // ----------------------------------------------------------------- self calls
+
+    /// Return this module itself, so a caller can chain into another function.
+    ///
+    /// The module's own object is the one object type in a signature that is
+    /// *not* an engine object: it has no id and no loader, because the engine
+    /// only learns it exists when this module registers it. So it cannot cross
+    /// the boundary the way a `Directory` does — `to_id()` on it would be a
+    /// query for a field the schema has never heard of. What goes back instead
+    /// is the object's state, which for a unit struct is `{}`, and the engine
+    /// hands that state back as the parent of the chained call.
+    #[dagger::function]
+    pub fn itself(&self) -> FeatureMatrix {
+        FeatureMatrix
+    }
+
+    /// The same, written `Self`.
+    ///
+    /// The macro reads the return type as text and has no resolver, so `Self`
+    /// and `FeatureMatrix` are two spellings it has to recognise separately.
+    /// Both are the module's own object; a caller cannot tell them apart.
+    #[dagger::function]
+    pub fn itself_as_self(&self) -> Self {
+        FeatureMatrix
+    }
+
     // --------------------------------------------------------------------- client
 
     /// Read one scalar field over one round trip.

@@ -150,4 +150,33 @@ type ObjectChecks {
       "a None should be a null rather than a resolved id or a failure",
     )
   }
+
+  """
+  A function returning the module's own object should chain into another of its
+  functions.
+
+  The one object type in a signature that is not an engine object. A
+  `Directory` crosses the boundary as an id the engine can load; the module's
+  own object has neither an id nor a loader, because the engine only learns it
+  exists when this module registers it. What crosses instead is the object's
+  *state* — `{}` for a unit struct — which the engine hands back as the parent
+  of the next call in the chain.
+
+  Both spellings are here because the macro reads the return type as text: it
+  has no resolver, so `Self` and `FeatureMatrix` are two things to recognise.
+  """
+  pub chainsIntoItself(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonString(
+      ["itself", "echo", "--string-arg", "hi"],
+      "hi",
+      "a function returning the module's own object should chain into another function",
+    )
+    target.assertJsonString(
+      ["itself-as-self", "with-default"],
+      "hello",
+      "`Self` should name the module's own object too",
+    )
+  }
 }

@@ -21,7 +21,8 @@
 use crate::parse::{variant_of, Enum, Function, ImplBlock, Param, SourceLoc, Variant};
 use crate::{
     camel_case, dispatch_arm, enum_defs, enum_impl, function_def, function_def_with,
-    is_generator_return, kind_of, object_impl, source_map_def, Enums, FunctionOptions,
+    is_generator_return, kind_of, object_impl, resolve_self_types, source_map_def,
+    substitute_self, Enums, FunctionOptions,
 };
 
 /// A parameter with no `#[dagger(...)]` options.
@@ -267,6 +268,147 @@ fn a_returned_object_is_encoded_as_its_id() {
     assert!(
         arm.contains("::dagger::encode_object(&Build.base())?"),
         "encoded as its id, fallibly: {arm}"
+    );
+}
+
+/// A function returning the module's own object hands back its *state*, not an
+/// id.
+///
+/// The module's own object is the one object type in a signature the engine has
+/// no loader for — it learns the object exists when this module registers it, so
+/// there is no `id` to ask for. What it takes instead is the state it hands back
+/// as the parent of the next call in the chain, which for the unit struct
+/// `#[dagger::object]` is written against is `{}`. Declaration is unchanged: an
+/// object return is an object return, whoever owns the object.
+#[test]
+fn the_modules_own_object_goes_back_as_its_state() {
+    let f = function("itself", Vec::new(), "Build");
+
+    let def = function_def(&f, &Enums::default()).expect("returning the module's own object is supported");
+    assert!(
+        def.contains(r#"return_kind: "OBJECT_KIND", return_type_name: "Build""#),
+        "declared as an object return like any other: {def}"
+    );
+
+    let arm = dispatch_arm("Build", &f, &Enums::default()).expect("the module's own object dispatches");
+    assert!(
+        arm.contains("::dagger::encode_module_object(&Build.itself())"),
+        "encoded as state, infallibly: {arm}"
+    );
+}
+
+/// An optional return of the module's own object composes: the state when there
+/// is one, a null when there is not.
+///
+/// The two halves meet here — an optional return is encoded inside a `match` on
+/// the `Option`, and the module's own object is encoded as state rather than as
+/// an id — and the failure to avoid is the object half being tested outside the
+/// `Option`, which would hand `encode_module_object` a value still inside one.
+#[test]
+fn an_optional_module_object_is_state_or_null() {
+    let f = function("maybe", Vec::new(), "Option<Build>");
+
+    let def = function_def(&f, &Enums::default()).expect("an optional own-object return is supported");
+    assert!(
+        def.contains(r#"return_kind: "OBJECT_KIND", return_type_name: "Build""#),
+        "declared as an object return: {def}"
+    );
+    assert!(def.contains("return_optional: true"), "declared optional: {def}");
+
+    let arm = dispatch_arm("Build", &f, &Enums::default()).expect("an optional own object dispatches");
+    assert!(
+        arm.contains("::core::option::Option::Some(__value) => ::dagger::encode_module_object(&__value)"),
+        "the present half is the object's state: {arm}"
+    );
+    assert!(
+        arm.contains("::core::option::Option::None => ::dagger::encode_null()"),
+        "the absent half is a null: {arm}"
+    );
+}
+
+/// `Self` and the type's own name are the same declaration.
+///
+/// The macro reads types as text and has no resolver, so the substitution is
+/// the whole mechanism: without it `Self` is declared to the engine as an object
+/// of that name, which no schema has. It runs over the parsed block, so this
+/// goes through `object_impl` rather than through one function.
+#[test]
+fn self_names_the_modules_own_object() {
+    let mut block = ImplBlock {
+        type_name: "Build".to_string(),
+        doc: String::new(),
+        source: SourceLoc::unknown(),
+        functions: vec![
+            function("itself", Vec::new(), "Self"),
+            function("fallibly", Vec::new(), "Result < Self , string >"),
+        ],
+    };
+
+    resolve_self_types(&mut block);
+    let generated = object_impl(&block, &Enums::default()).expect("`Self` is supported");
+
+    assert!(
+        !generated.contains(r#""Self""#),
+        "no object called `Self` is declared: {generated}"
+    );
+    assert_eq!(
+        generated.matches(r#"return_kind: "OBJECT_KIND", return_type_name: "Build""#).count(),
+        2,
+        "both spellings declare the module's own object: {generated}"
+    );
+    assert!(
+        generated.contains("::dagger::encode_module_object(&(Build.fallibly())?)"),
+        "a fallible one is unwrapped before it is encoded: {generated}"
+    );
+}
+
+/// `Self` is replaced as an identifier, not as text.
+#[test]
+fn substituting_self_leaves_longer_names_alone() {
+    for (ty, want) in [
+        ("Self", "Build"),
+        ("Option < Self >", "Option < Build >"),
+        ("slice < Self >", "slice < Build >"),
+        ("SelfTest", "SelfTest"),
+        ("MySelf", "MySelf"),
+        ("gen :: Directory", "gen :: Directory"),
+    ] {
+        assert_eq!(substitute_self(ty, "Build"), want, "substituting in `{ty}`");
+    }
+}
+
+/// The module's own object cannot be an argument: it has no id to arrive as,
+/// and the parent it does arrive as is `&self`.
+#[test]
+fn the_modules_own_object_is_refused_as_an_argument() {
+    let f = function("merge", vec![param("other", "Build")], "string");
+
+    let message = dispatch_arm("Build", &f, &Enums::default())
+        .expect_err("the module's own object is refused as an argument");
+    assert!(
+        message.contains("`other` is `Build`, the module's own object"),
+        "the message names the argument and the type: {message}"
+    );
+    assert!(
+        message.contains("&self"),
+        "the message says what it arrives as instead: {message}"
+    );
+}
+
+/// A list of the module's own object is refused, and says why.
+///
+/// The engine could carry one — it is a list of states — but `dagger call` has
+/// no spelling for chaining into a list element, and chaining is the only thing
+/// returning the module's own object is for.
+#[test]
+fn a_list_of_the_modules_own_object_is_refused() {
+    let f = function("all", Vec::new(), "slice < Build >");
+
+    let message = dispatch_arm("Build", &f, &Enums::default())
+        .expect_err("a list of the module's own object is refused");
+    assert!(
+        message.contains("`all` returns a list of `Build`, the module's own object"),
+        "the message names the function and the type: {message}"
     );
 }
 
