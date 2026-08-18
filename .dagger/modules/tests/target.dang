@@ -398,6 +398,26 @@ type RustRun {
   }
 
   """
+  Assert the command's stderr contains the given text.
+
+  Unlike `assertStdoutContains` this does not assert success first: what it
+  exists for is the message a *failing* function wrote, which is the whole
+  user-facing contract of `dagger::fail`. A skipped command is still reported as
+  the prerequisite failure it is, rather than as a stderr that happens to be
+  empty.
+  """
+  pub assertStderrContains(want: String!, message: String!): Void {
+    if (skipped) {
+      raise "prerequisite command failed: " + failedCommand + "\nstderr:\n" + failedStderr
+    }
+    let got = stderr
+    if (got.contains(want) == false) {
+      raise message + "\nargs: " + toJSON(args) + "\nwant substring:\n" + want + "\ngot:\n" + got
+    }
+    null
+  }
+
+  """
   Return the git status of a workspace path, relative to the last commit.
   Empty when the path is untouched.
   """

@@ -52,13 +52,51 @@ type DeclarationChecks {
   }
 
   """
-  A failing function should exit non-zero.
+  A failing function should exit non-zero, and say why.
 
-  `dagger::fail` writes to stderr and exits 2; what matters is that the CLI sees
-  a failure rather than an empty success.
+  `dagger::fail` writes to stderr and exits 2. The exit code is the half a
+  caller branches on, and it would be satisfied by a module that died silently;
+  the message is the half a caller reads, and the engine surfacing a module's
+  stderr is the whole of how it gets there.
   """
   pub failuresPropagate(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+
     harness.modTarget(ws).assertFailure(["boom"], "boom should exit non-zero")
+
+    target
+      .run(["api", "call", "-m", "/work/" + target.modulePath, "boom"])
+      .assertStderrContains(
+        "dagger: intentional failure",
+        "the message dagger::fail wrote should reach the caller's stderr",
+      )
+  }
+
+  """
+  A function that returns nothing should be callable, in both spellings.
+
+  Void is reached elsewhere in this suite only through `#[dagger::check]`, which
+  runs the same encoder but is declared `is_check: true` and is reached by
+  `dagger check` rather than by a call. What is unproven until here is the pair
+  an ordinary call needs to agree on: the engine accepting a `Void` return on a
+  function that is not a check, and `encode_void`'s `null` being what it expects
+  back for one. A return kind and an encoder that disagree — `STRING_KIND`
+  against `null` — fail the call, so succeeding is the assertion.
+
+  Both spellings are compiled because they differ to the parser rather than to
+  the reader: with no `->` at all the parsed return type is the empty string,
+  and `-> ()` arrives as the text `()`. `kind_of` maps both to `VOID_KIND`.
+  """
+  pub voidReturnsAreCallable(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+
+    target
+      .run(["api", "call", "-m", "/work/" + target.modulePath, "returns-nothing"])
+      .assertSuccess
+
+    target
+      .run(["api", "call", "-m", "/work/" + target.modulePath, "returns-unit"])
+      .assertSuccess
   }
 
   """

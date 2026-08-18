@@ -13,9 +13,9 @@ is here is the half of the SDK that is Rust, and that nothing else reaches:
   half of the crate speaking in `String`; anything touching a `TokenTree` is
   untestable there, because the `proc_macro` API panics outside a macro
   expansion. So `default`, `doc`, `deprecated`, `default_path`, `ignore`,
-  `Option<T>`, object arguments and returns, `#[dagger::check]` and
-  `#[dagger::function(generate)]` are checked by compiling a module that uses
-  them and calling it.
+  `Option<T>`, a Void return, object arguments and returns, `#[dagger::check]`
+  and `#[dagger::function(generate)]` are checked by compiling a module that
+  uses them and calling it.
 
 - `client` — the bindings `sdk/codegen` emits, at run time. That suite asserts
   on the *text* the generator writes against a miniature fixture schema, which

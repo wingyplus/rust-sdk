@@ -106,6 +106,24 @@ impl FeatureMatrix {
         dagger::fail(string("intentional failure"))
     }
 
+    /// Return nothing.
+    ///
+    /// The only `#[dagger::function]` in the fixture with a Void return.
+    /// `#[dagger::check]` reaches the same encoder, but it is declared
+    /// `is_check: true` and is run by `dagger check` rather than called, so
+    /// nothing else here shows that a plain function may return nothing.
+    #[dagger::function]
+    pub fn returns_nothing(&self) {}
+
+    /// Return nothing, spelled out.
+    ///
+    /// The other half of the void split, and it is a parsing difference rather
+    /// than a stylistic one: with no `->` at all `parse_functions` leaves
+    /// `return_ty` empty, and `-> ()` reaches `kind_of` as the text `()`. Both
+    /// map to `VOID_KIND`, and only the empty form is compiled above.
+    #[dagger::function]
+    pub fn returns_unit(&self) -> () {}
+
     /// A check that passes.
     #[dagger::check]
     pub fn passing_check(&self) {}
