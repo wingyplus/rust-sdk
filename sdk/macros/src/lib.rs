@@ -688,13 +688,14 @@ fn kind_of(ty: &str) -> Result<Kind, String> {
     let (kind, getter) = match trimmed {
         "string" | "String" | "&str" => ("STRING_KIND", "string"),
         "int" | "i64" | "i32" | "isize" | "usize" => ("INTEGER_KIND", "int"),
-        // The engine has one Float, and goish spells it `float64`, which is
-        // `f64`. `f32` is listed for the same reason `i32` is listed above, and
-        // with the same caveat: the kind is right, but the accessor hands back
-        // the wide type and the encoder takes it, so a narrow parameter is a
-        // type error in the expansion rather than here. Widening the whole
-        // scalar set is one change, not two — don't fix half of it.
-        "float64" | "f64" | "f32" => ("FLOAT_KIND", "float"),
+        // The 64-bit spelling only, and deliberately: there is no `f32` on the
+        // wire. GraphQL's Float is a double, goish models it as Go's `float64`,
+        // and the accessor and encoder either side of this arm both speak
+        // `f64`. Accepting `f32` would mean a lossy cast the author never asked
+        // for, or — as it did before — an `E0308` raised inside the macro's own
+        // expansion, which is the worst place for an error to surface. `f32`
+        // falls through to the ordinary "unsupported type" message instead.
+        "float64" | "f64" => ("FLOAT_KIND", "float"),
         "bool" => ("BOOLEAN_KIND", "bool"),
         "" | "()" => ("VOID_KIND", "void"),
         other => {

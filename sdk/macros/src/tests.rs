@@ -60,7 +60,6 @@ fn scalars_map_to_their_kinds() {
         ("i64", "INTEGER_KIND", "int"),
         ("float64", "FLOAT_KIND", "float"),
         ("f64", "FLOAT_KIND", "float"),
-        ("f32", "FLOAT_KIND", "float"),
         ("bool", "BOOLEAN_KIND", "bool"),
         ("", "VOID_KIND", "void"),
         ("()", "VOID_KIND", "void"),
@@ -466,6 +465,33 @@ fn an_optional_float_argument_uses_the_optional_accessor() {
     assert!(
         arm.contains(r#"let factor = args.float_opt("factor")?;"#),
         "read with the optional float accessor: {arm}"
+    );
+}
+
+/// `f32` is not a supported type, and is refused in the ordinary way.
+///
+/// There is no `f32` on the wire — GraphQL's Float is a double, and goish
+/// models it as Go's `float64` — so accepting one would mean a lossy cast the
+/// author never wrote. Declaring it a `FLOAT_KIND` anyway is worse than
+/// declaring nothing, which is what it did before: the accessor hands back an
+/// `f64` and the encoder takes an `f64`, so the mismatch surfaces as an E0308
+/// pointing at the attribute, inside an expansion the author cannot read.
+/// Refusing here turns that into a sentence.
+#[test]
+fn a_narrow_float_is_refused_like_any_other_unsupported_type() {
+    let message = match kind_of("f32") {
+        Err(message) => message,
+        Ok(_) => panic!("`f32` should not be a supported type"),
+    };
+    assert!(
+        message.contains("unsupported type `f32`"),
+        "refused as an unsupported type: {message}"
+    );
+    // And by the same sentence every other unsupported type produces: nothing
+    // float-specific, so what a reader learns is which scalars there are.
+    assert!(
+        message.contains("string, int, float, bool"),
+        "with the ordinary message: {message}"
     );
 }
 
