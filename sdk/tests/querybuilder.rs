@@ -404,6 +404,65 @@ fn TestChainWalksTheResponse(t: &mut testing::T) {
     assert_string(t, "platform", platform, "linux/amd64");
 }
 
+/// A step narrowed by an inline fragment opens a second brace in the query.
+///
+/// This is how an object is rebuilt from its id: the engine dropped the
+/// per-type `loadXFromID` loaders for one Relay-style `node`, which is typed as
+/// an interface whose only field is `id`, so anything else needs `... on X`.
+fn TestInlineFragmentNarrowsANodeStep(t: &mut testing::T) {
+    let chain = Chain::root().field_on("node", arg("id", "ctr-1"), "Container");
+
+    let c = ContainerFields::new();
+    let got = chain.render(&(c.stdout(), c.platform()));
+
+    let want =
+        string("{node(id:\"ctr-1\"){... on Container{f0:stdout f1:platform}}}");
+    if got != want {
+        t.Error(fmt::Sprintf!("render =\n  %s\nwant\n  %s", got, want));
+    }
+}
+
+/// An inline fragment adds a brace to the query and no level to the response.
+///
+/// The server answers a narrowed selection under the field's own name, so
+/// decoding walks `node` and stops — an extra hop for the fragment would look
+/// for a key that is never there.
+fn TestInlineFragmentAddsNoResponseLevel(t: &mut testing::T) {
+    let chain = Chain::root().field_on("node", arg("id", "ctr-1"), "Container");
+
+    let c = ContainerFields::new();
+    let data = parse(t, "{\"node\":{\"f0\":\"hi\",\"f1\":\"linux/amd64\"}}");
+    let (out, platform) = match chain.decode(&data, &(c.stdout(), c.platform())) {
+        Ok(decoded) => decoded,
+        Err(why) => t.Fatal(fmt::Sprintf!("decode: %s", why)),
+    };
+    assert_string(t, "stdout", out, "hi");
+    assert_string(t, "platform", platform, "linux/amd64");
+}
+
+/// A fragment step composes with ordinary ones, in both directions.
+///
+/// A rebuilt object is a chain like any other, so a caller goes on selecting
+/// from it — and every brace the fragment opened still has to be closed.
+fn TestInlineFragmentComposesWithPlainSteps(t: &mut testing::T) {
+    let chain = Chain::root()
+        .field_on("node", arg("id", "ctr-1"), "Container")
+        .field("from", arg("address", "alpine"));
+
+    let c = ContainerFields::new();
+    let got = chain.render(&c.stdout());
+    let want = string("{node(id:\"ctr-1\"){... on Container{from(address:\"alpine\"){f0:stdout}}}}");
+    if got != want {
+        t.Error(fmt::Sprintf!("render =\n  %s\nwant\n  %s", got, want));
+    }
+
+    let data = parse(t, "{\"node\":{\"from\":{\"f0\":\"hi\"}}}");
+    match chain.decode(&data, &c.stdout()) {
+        Ok(out) => assert_string(t, "stdout", out, "hi"),
+        Err(why) => t.Fatal(fmt::Sprintf!("decode: %s", why)),
+    }
+}
+
 /// Extending a chain leaves the receiver alone, so one object can be the
 /// starting point for two different calls.
 fn TestChainExtensionDoesNotMutateTheReceiver(t: &mut testing::T) {
@@ -741,6 +800,18 @@ fn main() {
             TestListElementErrorsNameTheIndex,
         ),
         ("TestChainWalksTheResponse", TestChainWalksTheResponse),
+        (
+            "TestInlineFragmentNarrowsANodeStep",
+            TestInlineFragmentNarrowsANodeStep,
+        ),
+        (
+            "TestInlineFragmentAddsNoResponseLevel",
+            TestInlineFragmentAddsNoResponseLevel,
+        ),
+        (
+            "TestInlineFragmentComposesWithPlainSteps",
+            TestInlineFragmentComposesWithPlainSteps,
+        ),
         (
             "TestChainExtensionDoesNotMutateTheReceiver",
             TestChainExtensionDoesNotMutateTheReceiver,

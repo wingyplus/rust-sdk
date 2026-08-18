@@ -15,13 +15,13 @@ loader and no garbage collector. A module links to one static binary.
 Backed by [`github.com/dagger/polyfill`](https://github.com/dagger/polyfill).
 
 > [!NOTE]
-> **Working, with one gap.** The whole lifecycle runs: `dagger sdk install`,
+> **Working.** The whole lifecycle runs: `dagger sdk install`,
 > `dagger module init rust`, `dagger generate`, and `dagger call` against a
 > module's functions, which execute as a single static binary. The bindings for
-> the other direction are generated too, and reach a live engine. The gap left
-> is the seam between them: nothing yet hands a module's own function the engine
-> connection those bindings need, so function signatures are still limited to
-> scalars. See [Status](#status).
+> the other direction are generated too, and reach a live engine; a function's
+> own signature may name engine objects as well as scalars. What is left is
+> narrower — lists in a signature, and handing an object straight to a client
+> method rather than as its id. See [Status](#status).
 
 ## What's in here
 
@@ -133,44 +133,20 @@ What a function *is* goes in the marker attribute — the one slot Go writes its
 A Rust module declares one with the `generate` option:
 
 ```rust
-use dagger::{Changeset, ObjectId, Session, Workspace};
-use goish::string;
+use dagger::gen;
+use dagger::ObjectId;
 
 /// Write a generated file into the workspace.
 #[dagger::function(generate)]
-pub fn generate(&self, ws: Workspace) -> Changeset {
-    let session = match Session::from_env() {
-        Some(s) => s,
-        None => dagger::fail(string("no engine session")),
-    };
-
+pub fn generate(&self, ws: gen::Workspace) -> gen::Changeset {
     // The workspace's current files: the "before" of the changeset.
-    let before = match session
-        .query(&(string("{loadWorkspaceFromID(id:")
-            + dagger::json_string(&ws.id())
-            + "){directory(path:\"/\"){id}}}"))
-        .and_then(|d| dagger::field_string(&d, &["loadWorkspaceFromID", "directory", "id"]))
-    {
-        Ok(id) => id,
-        Err(message) => dagger::fail(message),
-    };
+    let before = ws.directory("/");
+    let before_id = before.to_id().unwrap_or_else(|m| dagger::fail(m));
 
     // Write a file into it, and diff the result back against the before.
-    let quoted = dagger::json_string(&before);
-    let changes = match session
-        .query(&(string("{loadDirectoryFromID(id:")
-            + quoted.clone()
-            + "){withNewFile(path:\"generated.txt\",contents:\"hello\"){changes(from:"
-            + quoted
-            + "){id}}}}"))
-        .and_then(|d| {
-            dagger::field_string(&d, &["loadDirectoryFromID", "withNewFile", "changes", "id"])
-        }) {
-        Ok(id) => id,
-        Err(message) => dagger::fail(message),
-    };
-
-    Changeset::from_id(changes)
+    before
+        .with_new_file("generated.txt", "hello")
+        .changes(before_id)
 }
 ```
 
@@ -182,13 +158,11 @@ fail to load:
 - every argument is one the engine can leave out: an `Option<T>`, one with a
   `default`, or a `Workspace`, which the engine injects itself.
 
-That query-writing is the part the generated bindings replace. The example above
-uses the `Changeset` and `Workspace` in `dagger::objects`, which are ID wrappers
-and nothing more: they are hand-written because a scaffolded module has to
-compile before its first `dagger generate`, when `dagger::gen` is still a
-placeholder. Once it has generated, `dagger::gen::Workspace` and
-`dagger::gen::Changeset` are the real objects, and a generator can be written
-against `dag()` like any other function.
+The example names `dagger::gen`, so it only compiles *after* the module's first
+`dagger generate`. Before then those bindings are a placeholder, and the
+`Changeset` and `Workspace` at the crate root are what a module has: hand-written
+ID wrappers, enough to satisfy the same signature while a scaffolded module
+builds for the first time. That is why the starter templates stay on scalars.
 
 ### Argument options
 
@@ -381,7 +355,9 @@ What works today:
   before the function sees it — over the session `dag()` opens, so nothing is
   threaded through — and a returned one is resolved back to its ID, which is a
   round trip and so can fail. `codegen` emits the `ObjectId` impl that does both
-  for every object the engine has a `loadXFromID` for.
+  for every object the engine lets it rebuild from an id — a per-type
+  `loadXFromID` on engines through v0.21, or the single `node(id:)` that Dagger
+  1.0 replaced them with.
 
   ```rust
   /// Grep a directory for a pattern.
@@ -429,6 +405,23 @@ Run the shared SDK contract suite against it:
 ```sh
 dagger -m github.com/dagger/sdk-sdk -W . check
 ```
+
+That suite checks every SDK the same way, so it stops at the contract. The
+end-to-end checks for the Rust half — the attribute macros and the generated
+client, exercised by building a real module and calling it — live in
+[`.dagger/modules/tests`](./.dagger/modules/tests) and are discovered by a plain
+`dagger check`:
+
+```sh
+dagger check                        # both suites
+dagger check tests              # just the Rust end-to-end checks
+dagger check tests:client:decodes-object-lists
+```
+
+Building that suite's fixture also type-checks the whole generated client
+against a live engine's schema, which is otherwise a manual step — see
+[`sdk/README.md`](./sdk/README.md). Expect tens of minutes cold; the module's
+README explains the cost and how to iterate without paying it.
 
 Test the template helper directly:
 

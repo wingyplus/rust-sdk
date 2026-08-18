@@ -16,3 +16,10 @@ check.skip = ["*"]
 
 [modules.rust-sdk.as-sdk]
 name = "rust"
+
+# End-to-end checks for the Rust half of this SDK — the attribute macros and the
+# generated client — which the contract suite above cannot reach, because it
+# checks every SDK the same way. Discovered by a plain `dagger check`; see
+# .dagger/modules/tests/README.md for what that costs.
+[modules.tests]
+source = ".dagger/modules/tests"

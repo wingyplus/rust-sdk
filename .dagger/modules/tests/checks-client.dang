@@ -1,0 +1,136 @@
+"""
+Checks for the generated client bindings, exercised against a live engine.
+
+`sdk/codegen`'s own suite renders `tests/fixture.json`, a miniature schema, and
+asserts on the *text* it emits. That is the right contract for a generator — its
+failures surface as compile errors inside somebody else's module — but it cannot
+show two things: that the whole emitted surface compiles against a real schema,
+and that a query the bindings build comes back with the right answer.
+
+The first is free here. The fixture's `Cargo.toml` path-depends on the vendored
+crate, so building it type-checks all ~20,000 generated lines against the
+engine's own schema — the manual step `sdk/README.md` describes, run every time
+these checks run.
+
+The second is what the functions below are for. They cover the shapes the
+generator emits, one call each, so a failure names the shape.
+"""
+type ClientChecks {
+  let harness: TestHarness!
+
+  """
+  A leaf field should send one query and decode its scalar.
+
+  One check for the three decoders, because they are three lines of the same
+  `FromJson` table: `string`, `int`, `bool`.
+  """
+  pub decodesScalarLeaves(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonString(["leaf-string"], "leaf")
+    target.assertJsonOutput(["leaf-int"], "3", "an Int leaf should decode to int")
+    target.assertJsonOutput(["leaf-bool"], "true", "a Boolean leaf should decode to bool")
+  }
+
+  """
+  A list of scalars should decode into a slice.
+
+  `[String!]!` is emitted as a plain `Leaf<slice<string>>`, not as one of the
+  three list builders — a distinct decode path from the object list below.
+  """
+  pub decodesScalarLists(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonString(["list-of-strings"], "a.txt,b.txt")
+  }
+
+  """
+  A list of *objects* should decode, and its elements should still resolve.
+
+  This is the hardest thing codegen emits and the reason this group exists. A
+  `[Object!]!` field is fetched as a list of ids, and each element is then
+  rebuilt on a *fresh* root chain through `loadXFromID` — carrying the original
+  transport, in a loop whose local is called `__id` precisely so no schema name
+  can shadow it. Asserting on emitted text cannot show that a rebuilt element
+  resolves against the engine; reading a field off one can.
+  """
+  pub decodesObjectLists(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonString(
+      ["list-of-objects"],
+      "yes",
+      "an element rebuilt through loadEnvVariableFromID should resolve its own fields",
+    )
+  }
+
+  """
+  An enum should survive the round trip in both directions.
+
+  Out, it has to reach the query as a bare unquoted literal spelled the way the
+  schema spells it — `UDP`, not `Udp` and not `"UDP"`. Back, `FromJson` has to
+  map that spelling to the variant. The call also passes an opts struct with a
+  borrowed field alongside, so the generated `<'a>` is exercised.
+  """
+  pub roundTripsEnums(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonString(
+      ["enum-round-trip"],
+      "UDP",
+      "NetworkProtocol should reach the engine as a bare literal and decode back",
+    )
+  }
+
+  """
+  A field with optional arguments should be callable both ways.
+
+  Codegen emits two methods per such field — one leaving every optional to the
+  engine, one taking the opts struct — and the second is what a caller reaches
+  for the moment they need an argument.
+  """
+  pub honorsOptionalArguments(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonStringContains(
+      ["opts-pair"],
+      "|c.txt",
+      "entries(path:) should read the subdirectory the opts struct names",
+    )
+  }
+
+  """
+  Several fields should be readable in one round trip, including a nested
+  selection.
+
+  Fields are aliased positionally, and the alias counter restarts inside every
+  `{ }` while continuing across siblings. `sdk/src/querybuilder.rs` calls that
+  the load-bearing detail, and its own suite tests it against a fake transport;
+  this tests it against an engine that actually answers.
+  """
+  pub readsSeveralFieldsAtOnce(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonStringContains(
+      ["multi-field-fetch"],
+      "leaf|linux/",
+      "a tuple selection should decode both fields, in order",
+    )
+    target.assertJsonStringContains(
+      ["nested-select"],
+      "os-release|",
+      "a sub-selection should decode with its own alias counter",
+    )
+  }
+
+  """
+  A chain across several object types should build one query and send it once.
+  """
+  pub chainsAcrossObjects(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonString(["object-chain"], "chained")
+  }
+
+  """
+  An object handed back to a client method should reach it as an id.
+
+  This is a known limitation rather than an aspiration: the schema types such an
+  argument `DirectoryID`, which these bindings map to a string, so a caller
+  writes `to_id()?`. The check pins the behaviour that exists, so that changing
+  it is a deliberate act.
+  """
+  pub passesObjectsById(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonString(["pass-object"], "mounted")
+  }
+}

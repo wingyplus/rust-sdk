@@ -1,0 +1,102 @@
+"""
+Checks for what the module verbs see when they look at a Rust module.
+
+`dagger check` and `dagger generate` discover what a module offers by loading
+it, so these assert on the declaration reaching the engine rather than on any
+value coming back.
+"""
+type VerbChecks {
+  let harness: TestHarness!
+
+  """
+  `dagger generate` should have replaced the seeded placeholder bindings.
+
+  The cheapest check in the suite and the best first signal: it needs no nested
+  engine at all, just a file out of the prepared workspace, and it fails
+  unambiguously when generate silently did nothing — which is the most likely
+  lifecycle regression by some distance.
+  """
+  pub generateWritesRealBindings(ws: Workspace!): Void @check {
+    let generated = harness.target(ws).moduleFile("dagger/src/gen/mod.rs")
+
+    assert("dagger generate should replace src/gen with bindings from the engine's schema") {
+      generated.contains("placeholder") == false
+    }
+    assert("the generated bindings should define the API root") {
+      generated.contains("pub fn dag()")
+    }
+  }
+
+  """
+  The fixture module should build and serve its API.
+
+  Deliberately the loudest check in the suite, and not redundant with the ones
+  that call functions. `dagger generate` tolerates a module it cannot load — it
+  reports the failure and carries on with the generators it did find — so a
+  fixture that fails to compile leaves the file-reading checks above perfectly
+  green. Introspecting the module is what refuses to be fooled: it cannot
+  succeed unless cargo did.
+  """
+  pub moduleBuildsAndServes(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+
+    target
+      .run(["api", "functions", "-m", "/work/" + target.modulePath])
+      .assertStdoutContains(
+        "leaf-string",
+        "the fixture module should compile and serve its functions",
+      )
+  }
+
+  """
+  `#[dagger::check]` should put a function in the check tree, and running the
+  tree should pass.
+
+  A check takes no caller arguments — `dagger check` runs it with none — so the
+  macro rejects a required argument at compile time rather than letting the
+  engine quietly leave the check out. `checkedWithDefault` is here to show the
+  other half of that rule: an argument carrying a default is still runnable.
+  """
+  pub checksAreDiscoveredAndRun(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+    let listed = target.runInModule(["check", "-l"])
+
+    listed.assertStdoutContains("passing-check", "a #[dagger::check] should appear in the check tree")
+    listed.assertStdoutContains(
+      "checked-with-default",
+      "a check whose only argument has a default should still be runnable",
+    )
+
+    target.runInModule(["check"]).assertSuccess
+  }
+
+  """
+  `#[dagger::function(generate)]` should register a generator, and running
+  generation should apply what it returns.
+
+  The marker file is the proof the changeset was applied rather than merely
+  built: the fixture's generator ran during the suite's second `dagger generate`
+  — the first could not have run it, because the fixture was not there yet.
+  """
+  pub generatorsRunAndApply(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+
+    target
+      .runInModule(["generate", "-l"])
+      .assertStdoutContains("feature-matrix", "a Rust module should expose its generator")
+
+    assert("the fixture's generator should have written its marker into the workspace") {
+      target.preparedWorkspace.exists("e2e-generated.txt")
+    }
+  }
+
+  """
+  Generating again over already-generated bindings should succeed.
+
+  Not idempotence in the strict sense — that is sdk-sdk's `generation:*` ground —
+  but it does catch a generate that only works from the seeded placeholder.
+  """
+  pub generateIsRepeatable(ws: Workspace!): Void @check {
+    harness.target(ws).run(["generate"]).assertSuccess
+  }
+}

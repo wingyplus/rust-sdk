@@ -1,0 +1,415 @@
+# The platform every container here runs on. A goish binary is x86_64 only, so
+# the module the nested engine builds can only be exec'd on linux/amd64 — the
+# same constant `servePlatform` names in ../../../mod.dang and
+# ../../../runtime/main.dang. Top-level `let` is file-scoped in Dang, so this
+# file carries its own copy, the way those two do.
+let runnerPlatform: Platform! = "linux/amd64"
+let runnerOS: String! = "linux"
+let runnerArch: String! = "amd64"
+
+# Where the SDK under test is vendored inside the scratch workspace, the name it
+# is installed under, and the name of the module scaffolded from it.
+#
+# The module name is load-bearing for the fixture: `helpers/render-template`
+# derives the cargo package from it (`feature_matrix`) and the Rust type name
+# from that (`FeatureMatrix`), and the fixture's `src/main.rs` has to spell the
+# type the rendered `Cargo.toml` was written for. Renaming the module without
+# renaming the struct fails to compile.
+let vendorRoot: String! = "vendor/rust-sdk"
+let sdkInstallName: String! = "rust-under-test"
+let moduleName: String! = "feature-matrix"
+
+# Where the run wrapper records each command's result.
+let runDir: String! = "/tmp/rust-e2e"
+
+# Directories never copied into the scratch workspace. A developer's local
+# `target/` is a few hundred megabytes of goish object files, and the vendored
+# copy is the input to a `sdk install` that hashes everything it is given.
+let vendorExcludes: [String!]! = [".git", "**/.git", "target", "**/target"]
+
+"""
+A Rust SDK module under end-to-end test.
+
+The target vendors this repository into a scratch git workspace inside a runner
+container, installs a release Dagger CLI, and drives the SDK through the
+commands a user would run: `dagger sdk install`, `dagger module init`,
+`dagger generate`. It then overwrites the scaffolded module's `src/main.rs`
+with a fixture and generates once more, leaving a workspace whose module
+exercises the whole Rust surface.
+
+The fixture is injected *after* the first generate, and that ordering is
+load-bearing rather than incidental. `sdk/src/gen/` is a placeholder until a
+module's first `dagger generate`, so a `main.rs` naming `dagger::gen::Directory`
+or calling `dag()` cannot compile before then — the same bootstrap cycle
+`initModule` seeds `dagger/` to break, seen from the fixture's side. The second
+generate is what registers the fixture's own `#[dagger::function(generate)]`.
+"""
+type RustTarget {
+  let workspaceView: Directory!
+  let sourceRootPath: String!
+  let fixture: Directory!
+  let daggerCliVersion: String!
+  let timeout: String!
+
+  """
+  Whether to repoint the scaffolded module at the runtime in the working tree.
+
+  `targetRuntime` in ../../../rust-sdk.dang returns a *published* ref, so a
+  module scaffolded during a test would otherwise be built by the runtime on
+  GitHub while the SDK crate under test came from this checkout — a suite that
+  goes green with a broken `toRustCrateName` in `runtime/main.dang`. Rewriting
+  the scaffolded config closes that gap; turn it off to check the published
+  runtime instead, or if the engine will not resolve a relative runtime source.
+  """
+  pub localRuntime: Boolean! = true
+
+  """
+  Workspace-relative path of the module scaffolded from the SDK under test.
+  """
+  pub modulePath: String! {
+    ".dagger/modules/" + moduleName
+  }
+
+  """
+  The workspace every check calls into: scaffolded, generated, and carrying the
+  fixture.
+
+  Each check derives from this one value, so the whole lifecycle — one install,
+  one init, two generates — is content-addressed and evaluated once for the
+  suite rather than once per check.
+  """
+  pub preparedWorkspace: Directory! {
+    regeneratedState.directory("/work")
+  }
+
+  """
+  Read a file from the scaffolded module after the lifecycle has run.
+  """
+  pub moduleFile(path: String!): String! {
+    regeneratedState.file("/work/" + modulePath + "/" + path).contents
+  }
+
+  """
+  Run a dagger command from the workspace root against the prepared workspace.
+
+  An escape hatch for reading raw stdout and stderr while iterating, and the
+  only way to assert on verbs mod-test does not speak — it always runs
+  `api call -j`.
+  """
+  pub run(args: [String!]!): RustRun! {
+    RustRun(container: pipe(regeneratedState, "/work", args), args: args)
+  }
+
+  """
+  Send a GraphQL document to the scaffolded module and capture the reply.
+
+  `dagger api query` reads its document from standard input, so this is the one
+  command that cannot go through `run`. It exists for the declaration metadata
+  that has no behavioural shadow — an argument's description survives into
+  `--help`, but its deprecation does not, and asking the schema is the only way
+  to see whether the macro declared it.
+  """
+  pub query(document: String!): RustRun! {
+    let args = ["api", "query", "-m", "/work/" + modulePath]
+    RustRun(container: pipe(regeneratedState, "/work", args, document), args: args)
+  }
+
+  """
+  Run a dagger command from the scaffolded module's directory.
+  """
+  pub runInModule(args: [String!]!): RustRun! {
+    RustRun(container: pipe(regeneratedState, "/work/" + modulePath, args), args: args)
+  }
+
+  """
+  Return a copy of this target with a different command timeout.
+  """
+  pub withTimeout(timeout: String!): RustTarget! {
+    RustTarget(
+      workspaceView: workspaceView,
+      sourceRootPath: sourceRootPath,
+      fixture: fixture,
+      daggerCliVersion: daggerCliVersion,
+      timeout: timeout,
+      localRuntime: localRuntime,
+    )
+  }
+
+  """
+  Return a copy of this target that builds with the published runtime.
+  """
+  pub withPublishedRuntime: RustTarget! {
+    RustTarget(
+      workspaceView: workspaceView,
+      sourceRootPath: sourceRootPath,
+      fixture: fixture,
+      daggerCliVersion: daggerCliVersion,
+      timeout: timeout,
+      localRuntime: false,
+    )
+  }
+
+  """
+  Scratch git workspace with the SDK under test vendored in.
+  """
+  let workspace: Container! {
+    runner
+      .withDirectory("/work/" + vendorRoot, workspaceView, exclude: vendorExcludes)
+      .withWorkdir("/work")
+      .withExec(["git", "init", "-q"])
+      .withExec(["git", "add", "-A"])
+      .withExec([
+        "git",
+        "-c", "user.email=rust-sdk-e2e@dagger.io",
+        "-c", "user.name=rust-sdk-e2e",
+        "commit", "-q", "--allow-empty", "-m", "rust-sdk e2e scratch workspace",
+      ])
+  }
+
+  """
+  Workspace state after `dagger sdk install`.
+  """
+  let installedState: Container! {
+    pipe(workspace, "/work", ["sdk", "install", "--name", sdkInstallName, "./" + sdkPath])
+  }
+
+  """
+  Workspace state after `dagger module init`.
+  """
+  let initializedState: Container! {
+    pipe(installedState, "/work", ["module", "init", sdkInstallName, moduleName])
+  }
+
+  """
+  Workspace state with the scaffolded module pointed at the vendored runtime.
+
+  See `localRuntime`. The rewrite is asserted rather than assumed: the sed is
+  followed by a grep, so a config the engine spells differently fails here
+  rather than silently leaving the published runtime in place.
+  """
+  let runtimeState: Container! {
+    if (localRuntime == false) {
+      initializedState
+    } else {
+      let configPath = "/work/" + modulePath + "/dagger-module.toml"
+      let localSource = "../../../" + vendorRoot + "/runtime"
+
+      initializedState.withExec([
+        "sh",
+        "-c",
+        "config=$1; want=$2; sed -i 's|^\\([ \\t]*\\)source = \".*runtime\"|\\1source = \"'\"$want\"'\"|' \"$config\"; grep -q \"$want\" \"$config\" || { echo \"could not repoint the scaffolded module at the local runtime; see localRuntime in target.dang\" >&2; cat \"$config\" >&2; exit 1; }",
+        "repoint-runtime",
+        configPath,
+        localSource,
+      ])
+    }
+  }
+
+  """
+  Workspace state after the first `dagger generate`, which replaces the seeded
+  placeholder bindings with ones derived from the engine's own schema.
+  """
+  let generatedState: Container! {
+    pipe(runtimeState, "/work", ["generate"])
+  }
+
+  """
+  Workspace state with the fixture's sources written over the scaffolded ones.
+
+  The fixture supplies `src/main.rs` and its test data, and nothing else, so
+  `Cargo.toml`, the `.cargo/config.toml` link flags and the goish git rev all
+  come from the template that `initModule` rendered. That is what keeps the
+  fixture from drifting off the pin the rest of this repository shares.
+  """
+  let fixturedState: Container! {
+    generatedState.withDirectory("/work/" + modulePath, fixture)
+  }
+
+  """
+  Workspace state after generating a second time.
+
+  The fixture declares a generator, and the engine only learns about it by
+  loading the module — which is to say, after the fixture is in place. This
+  second pass is also what proves generation is idempotent over the bindings the
+  first pass wrote.
+  """
+  let regeneratedState: Container! {
+    pipe(fixturedState, "/work", ["generate"])
+  }
+
+  """
+  Workspace-relative path of the vendored SDK module source.
+  """
+  let sdkPath: String! {
+    if (sourceRootPath == ".") { vendorRoot } else { vendorRoot + "/" + sourceRootPath }
+  }
+
+  """
+  Run a dagger command and capture stdout, stderr, and exit code.
+
+  Every command runs through this wrapper. When an earlier command in the chain
+  failed, later ones are skipped and record a marker instead, so a check reports
+  either its own failure or a clear prerequisite failure — which is the
+  difference between "the fixture is wrong" and "cargo did not build".
+  """
+  let pipe(state: Container!, workdir: String!, args: [String!]!, stdin: String! = ""): Container! {
+    state.withWorkdir(workdir).withExec(
+      [
+        "sh",
+        "-c",
+        "mkdir -p " + runDir + "; timeout_arg=$1; shift 1; if [ -f " + runDir + "/failed-command ]; then touch " + runDir + "/skipped; exit 0; fi; timeout \"$timeout_arg\" /usr/local/bin/dagger --progress plain -y \"$@\" > " + runDir + "/stdout 2> " + runDir + "/stderr; code=$?; printf '%s' \"$code\" > " + runDir + "/exit-code; if [ \"$code\" -ne 0 ]; then printf 'dagger %s' \"$*\" > " + runDir + "/failed-command; cp " + runDir + "/stderr " + runDir + "/failed-stderr; fi; exit 0",
+        "rust-sdk-e2e-run",
+        timeout,
+      ] + args,
+      experimentalPrivilegedNesting: true,
+      stdin: stdin,
+    )
+  }
+
+  """
+  Container with a release Dagger CLI and git installed.
+  """
+  let runner: Container! {
+    container(platform: runnerPlatform)
+      .from("alpine:3.22")
+      .withoutEntrypoint
+      .withExec(["apk", "add", "--no-cache", "git"])
+      .withFile("/tmp/" + daggerCliArchiveName, daggerCliArchive)
+      .withFile("/tmp/checksums.txt", daggerCliChecksums)
+      .withExec([
+        "sh",
+        "-c",
+        "archive=$1; cd /tmp; line=$(awk -v f=\"$archive\" '$2 == f { print }' checksums.txt); test -n \"$line\"; printf '%s\n' \"$line\" | sha256sum -c -; tar -xzf \"$archive\" -C /usr/local/bin dagger; chmod +x /usr/local/bin/dagger",
+        "install-dagger-cli",
+        daggerCliArchiveName,
+      ])
+  }
+
+  """
+  Resolved Dagger CLI release version without a leading "v".
+  """
+  let daggerCliReleaseVersion: String! {
+    if (daggerCliVersion == "latest") {
+      http(url: "https://dl.dagger.io/dagger/versions/latest").contents.trimSuffix("\n").trimPrefix("v")
+    } else {
+      daggerCliVersion.trimPrefix("v")
+    }
+  }
+
+  let daggerCliArchiveName: String! {
+    "dagger_v" + daggerCliReleaseVersion + "_" + runnerOS + "_" + runnerArch + ".tar.gz"
+  }
+
+  let daggerCliArchive: File! {
+    http(url: daggerCliReleaseURL + "/" + daggerCliArchiveName)
+  }
+
+  let daggerCliChecksums: File! {
+    http(url: daggerCliReleaseURL + "/checksums.txt")
+  }
+
+  let daggerCliReleaseURL: String! {
+    "https://dl.dagger.io/dagger/releases/" + daggerCliReleaseVersion
+  }
+}
+
+"""
+Result of a dagger CLI command run against the workspace under test.
+"""
+type RustRun {
+  let container: Container!
+  let args: [String!]!
+
+  """
+  The command stdout.
+  """
+  pub stdout: String! {
+    container.file(runDir + "/stdout").contents
+  }
+
+  """
+  The command stderr.
+  """
+  pub stderr: String! {
+    container.file(runDir + "/stderr").contents
+  }
+
+  """
+  The command exit code as decimal text.
+  """
+  pub exitCode: String! {
+    container.file(runDir + "/exit-code").contents
+  }
+
+  """
+  Whether the command exited successfully.
+  """
+  pub succeeded: Boolean! {
+    exitCode == "0"
+  }
+
+  """
+  Whether the command was skipped because an earlier command failed.
+  """
+  pub skipped: Boolean! {
+    container.directory(runDir).exists("skipped")
+  }
+
+  """
+  Fail when the command did not exit successfully.
+
+  When the command never ran because an earlier one failed, report that
+  prerequisite failure instead — a broken cargo build should not surface as a
+  confusing failure three commands later.
+  """
+  pub assertSuccess: Void {
+    if (skipped) {
+      raise "prerequisite command failed: " + failedCommand + "\nstderr:\n" + failedStderr
+    }
+    if (succeeded == false) {
+      raise "dagger command failed: " + toJSON(args) + "\nstderr:\n" + stderr
+    }
+    null
+  }
+
+  """
+  Fail when the command exited successfully.
+  """
+  pub assertFailure: Void {
+    if (skipped) {
+      raise "prerequisite command failed: " + failedCommand + "\nstderr:\n" + failedStderr
+    }
+    if (succeeded) {
+      raise "dagger command unexpectedly succeeded: " + toJSON(args)
+    }
+    null
+  }
+
+  """
+  Assert the command succeeded and its stdout contains the given text.
+  """
+  pub assertStdoutContains(want: String!, message: String!): Void {
+    assertSuccess
+    let got = stdout
+    if (got.contains(want) == false) {
+      raise message + "\nargs: " + toJSON(args) + "\nwant substring:\n" + want + "\ngot:\n" + got
+    }
+    null
+  }
+
+  """
+  Return the git status of a workspace path, relative to the last commit.
+  Empty when the path is untouched.
+  """
+  pub workspaceChanges(path: String!): String! {
+    container.withExec(["git", "-C", "/work", "status", "--porcelain", "--", path]).stdout
+  }
+
+  let failedCommand: String! {
+    container.file(runDir + "/failed-command").contents
+  }
+
+  let failedStderr: String! {
+    container.file(runDir + "/failed-stderr").contents
+  }
+}

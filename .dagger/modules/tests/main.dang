@@ -1,0 +1,162 @@
+pub description = "End-to-end checks for modules built by the Rust SDK"
+
+"""
+End-to-end checks for this repository, driven through a real Dagger CLI.
+
+`dagger -m github.com/dagger/sdk-sdk -W . check` already covers the SDK
+*contract* — install, init, generate, the module verbs, dependency chains — and
+covers it the same way for every SDK. Those checks are not repeated here. What
+is here is the half of the SDK that is Rust, and that nothing else reaches:
+
+- `declaration` and `objects` — the surface the attribute macros declare.
+  `sdk/macros`'s own suite is ordinary `#[test]` functions that can only see the
+  half of the crate speaking in `String`; anything touching a `TokenTree` is
+  untestable there, because the `proc_macro` API panics outside a macro
+  expansion. So `default`, `doc`, `deprecated`, `default_path`, `ignore`,
+  `Option<T>`, object arguments and returns, `#[dagger::check]` and
+  `#[dagger::function(generate)]` are checked by compiling a module that uses
+  them and calling it.
+
+- `client` — the bindings `sdk/codegen` emits, at run time. That suite asserts
+  on the *text* the generator writes against a miniature fixture schema, which
+  cannot show that the emitted surface compiles against a real schema, let alone
+  that a query it builds comes back with the right answer.
+
+- `verbs` — what `dagger check` and `dagger generate` see when they look at a
+  Rust module.
+
+All four groups share one scaffolded module and one fixture, because each
+fixture is a full cargo build of goish and the whole generated surface. See
+`target.dang` for the lifecycle and why the fixture is injected when it is.
+"""
+type Tests {
+  """
+  Dagger CLI release the checks drive the SDK through.
+
+  Read from mod-test rather than declared again: our runner stages the workspace
+  and mod-test's runner calls into it, so two different CLI releases would mean
+  one producing a workspace the other cannot load — intermittently, and only
+  sometimes.
+  """
+  pub daggerCliVersion: String! { modTest.daggerCliVersion }
+
+  """
+  How long any one dagger command may take.
+
+  Generous on purpose: a cold run compiles goish, the vendored SDK and the
+  fixture, and the fixture is built with `lto = true` and `codegen-units = 1`
+  like any other module this SDK scaffolds.
+  """
+  pub timeout: String! = "30m"
+
+  """
+  Checks for the function and argument surface the attribute macros declare.
+  """
+  pub declaration: DeclarationChecks! {
+    DeclarationChecks(harness: harness)
+  }
+
+  """
+  Checks for engine objects crossing the module call boundary.
+  """
+  pub objects: ObjectChecks! {
+    ObjectChecks(harness: harness)
+  }
+
+  """
+  Checks for the generated client bindings, exercised against a live engine.
+  """
+  pub client: ClientChecks! {
+    ClientChecks(harness: harness)
+  }
+
+  """
+  Checks for what the module verbs see in a Rust module.
+  """
+  pub verbs: VerbChecks! {
+    VerbChecks(harness: harness)
+  }
+
+  """
+  The test target for this workspace.
+
+  Exposed so the lifecycle can be driven by hand while iterating, without going
+  through a check:
+
+      dagger call -m .dagger/modules/tests target run --args '["version"]' stdout
+  """
+  pub target(ws: Workspace!): RustTarget! {
+    harness.target(ws)
+  }
+
+  let harness: TestHarness! {
+    TestHarness(daggerCliVersion: daggerCliVersion, timeout: timeout, fixture: fixture)
+  }
+
+  """
+  The Rust sources written over the scaffolded module.
+
+  Taken from this module's own source rather than the workspace, so the fixture
+  travels with the checks that assert on it — the same way `rust-sdk.dang` reads
+  `templates/`.
+  """
+  let fixture: Directory! {
+    currentModule.source.directory("fixtures/feature-matrix")
+  }
+}
+
+"""
+Resolution of the SDK under test, and the targets built from it.
+
+Every check group threads this through, so locating this repository in the
+workspace and staging a module from it stays in one place.
+"""
+type TestHarness {
+  let daggerCliVersion: String!
+  let timeout: String!
+  let fixture: Directory!
+
+  """
+  The end-to-end target for the SDK at the workspace root.
+  """
+  pub target(ws: Workspace!): RustTarget! {
+    let module = sdkModule(ws)
+
+    RustTarget(
+      workspaceView: module.workspaceView,
+      sourceRootPath: module.sourceRootPath,
+      fixture: fixture,
+      daggerCliVersion: daggerCliVersion,
+      timeout: timeout,
+    )
+  }
+
+  """
+  A mod-test black-box target over the prepared workspace.
+
+  mod-test owns the calling and the assertion vocabulary; this module owns only
+  the lifecycle that gets a Rust module into a callable state. The hand-off is a
+  plain `Directory!`, which is what keeps the two sides independent.
+
+  Private, and it has to be: the engine rejects a module whose API returns a
+  type belonging to a dependency ("cannot return external type from dependency
+  module"). Only what this module declares itself may cross its own boundary.
+  """
+  let modTarget(ws: Workspace!): ModTestTarget! {
+    let staged = target(ws)
+    modTest.target(staged.preparedWorkspace, staged.modulePath).withTimeout(timeout)
+  }
+
+  """
+  The SDK module at the workspace root.
+  """
+  let sdkModule(ws: Workspace!): PolyfillModuleSource! {
+    let configs = ws.directory("/", include: ["dagger.json", "dagger-module.toml"])
+
+    if (configs.exists("dagger.json") == false and configs.exists("dagger-module.toml") == false) {
+      raise "no SDK module detected at the workspace root; run these checks from the rust-sdk repository"
+    }
+
+    polyfill.workspace(ws).moduleSource(".")
+  }
+}

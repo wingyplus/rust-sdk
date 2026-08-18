@@ -81,8 +81,13 @@ function needs nothing threaded through: `dag()` opens the session the engine
 left in the environment, via `default_transport()` in `src/engine.rs`.
 
 Objects cross the call boundary too: `codegen` emits an `ObjectId` impl for
-every object the schema has a `loadXFromID` for, so a function can take a
-`Directory` and return a `Container`. An argument arrives as an ID and is
+every object the schema lets it rebuild from an id, so a function can take a
+`Directory` and return a `Container`. Which spelling that is depends on the
+engine, and both are supported: engines through v0.21 carry a `loadXFromID` per
+type, while Dagger 1.0 dropped all of them for one Relay-style
+`node(id: ID!): Node` — an interface, so the chain narrows it with
+`... on Directory`, which is what `Chain::field_on` renders. A loader is
+preferred where one exists, so one set of bindings works against both. An argument arrives as an ID and is
 rebuilt into a real client object, over the same session `dag()` opens; a
 returned one is resolved to its ID, which is a round trip and so can fail.
 

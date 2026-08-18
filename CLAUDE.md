@@ -187,7 +187,7 @@ caches hold source, not objects, and stay shared.
   engine the module will run against — so anything spelled as a plain type name
   is registered as an engine object of that name, and the check that it *is* one
   is that it implements `dagger::ObjectId`, which `sdk/codegen` emits for every
-  object with a `loadXFromID`. Two consequences. The name has to be read off the
+  object the schema lets it rebuild from an id. Two consequences. The name has to be read off the
   last path segment, so `render` in `sdk/macros/src/parse.rs` has to collapse
   ` : : ` — a path arrives as two `:` tokens, so `gen::Directory` renders as
   `gen : : Directory`, whose last segment is the whole string, and the engine is
@@ -240,10 +240,12 @@ caches hold source, not objects, and stay shared.
 | `sdk/` | The `dagger` crate and `sdk/codegen`, its bindings generator |
 | `templates/` | Starters for `dagger module init rust` |
 | `helpers/render-template/` | Helper that renders a template for a module name |
+| `.dagger/modules/tests/` | End-to-end checks for the Rust surface, in Dang |
 
 ## Working on this repo
 
-Dang sources: `rust-sdk.dang`, `mod.dang`, `template.dang`, `runtime/main.dang`.
+Dang sources: `rust-sdk.dang`, `mod.dang`, `template.dang`, `runtime/main.dang`,
+and `.dagger/modules/tests/*.dang`.
 Format with `dang fmt -w`, but check the binary first — a `dang` older than the
 `pub` keyword will silently strip `pub` from every declaration.
 
@@ -305,6 +307,44 @@ Run the shared SDK contract suite:
 ```sh
 dagger -m github.com/dagger/sdk-sdk -W . check
 ```
+
+That suite checks every SDK identically, so it stops at the contract. The
+end-to-end checks for what is Rust-specific live in `.dagger/modules/tests`, a
+Dang module discovered by a plain `dagger check`, and are the other half of the
+manual step above: they scaffold a module from this working tree, generate it
+against a live engine, drop a fixture over its `src/main.rs`, and call it.
+
+```sh
+dagger check tests
+dagger check tests:client:decodes-object-lists
+```
+
+Building that fixture is what type-checks the whole generated surface, so the
+`sdk/README.md` recipe is now a debugging aid rather than a step to remember —
+but only when these checks actually run.
+
+Three things about that module are load-bearing; its README argues each at
+length:
+
+- **The fixture is injected after the first `generate`, never before.** It names
+  `dagger::gen` and calls `dag()`, and `src/gen` is a placeholder until then.
+  Injecting earlier recreates the bootstrap cycle `initModule` exists to break.
+- **The fixture ships `src/main.rs` and test data, and no `Cargo.toml`.** It is
+  merged over a scaffolded module, so the goish pin, the link flags and the
+  derived crate name come from `templates/default` at test time and cannot go
+  stale. Its `pub struct FeatureMatrix` has to match the module name
+  `feature-matrix`, though, because `Cargo.toml` was rendered from it.
+- **One fixture, many functions.** Each fixture is a full cargo build of goish
+  and ~20,000 generated lines with `lto = true`. Add a function, not a fixture.
+
+Two things that will bite when editing that module. A `pub` function may not
+return a type belonging to a dependency — the engine rejects the module with
+"cannot return external type from dependency module" — which is why the
+`mod-test` target is reached through a `let`. And a scaffolded module points at
+the *published* runtime, because that is what `targetRuntime` returns, so the
+suite rewrites its `[runtime] source` to the vendored copy; without that,
+`runtime/main.dang` in the working tree is never exercised and a broken
+`toRustCrateName` goes green.
 
 To test a Rust change without an engine, build the crate against a local goish
 checkout — swap the git dep for a path dep in a scratch copy rather than editing

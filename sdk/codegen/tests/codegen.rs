@@ -239,6 +239,14 @@ fn render_fixture(t: &mut testing::T) -> string {
     source
 }
 
+fn render_node_fixture(t: &mut testing::T) -> string {
+    let (source, err) = generate(&bytes(string(FIXTURE_NODE)));
+    if err != nil {
+        t.Fatal(fmt::Sprintf!("generate: %v", err));
+    }
+    source
+}
+
 /// A scalar field sends a query; an object field extends the chain.
 fn TestLeafAndChainMethods(t: &mut testing::T) {
     let source = render_fixture(t);
@@ -363,7 +371,8 @@ fn TestListOfObjectsGoesThroughTheLoader(t: &mut testing::T) {
     );
 }
 
-/// An element type with no loader is the one shape that is skipped — and the
+/// An element type that cannot be rebuilt from an id is the one shape that is
+/// skipped — and the
 /// note saying so has to be a plain comment. A `///` with no item under it
 /// attaches itself to whatever method comes next, which silently documents the
 /// wrong thing.
@@ -371,7 +380,11 @@ fn TestListWithoutALoaderIsSkipped(t: &mut testing::T) {
     let source = render_fixture(t);
 
     excludes(t, &source, "slice<Orphan>");
-    contains(t, &source, "    // `orphans` is a list of `Orphan`, which has no loader");
+    contains(
+        t,
+        &source,
+        "    // `orphans` is a list of `Orphan`, which cannot be rebuilt from an id",
+    );
     excludes(t, &source, "    /// Not available as a method");
 }
 
@@ -411,8 +424,79 @@ fn TestObjectWithoutALoaderIsNotAnObjectId(t: &mut testing::T) {
     // `File` has an `id` field and no loader; `Query` has neither.
     excludes(t, &source, "impl crate::ObjectId for File {");
     excludes(t, &source, "impl crate::ObjectId for Query {");
-    contains(t, &source, "// `File` has no loader taking an id");
-    excludes(t, &source, "/// `File` has no loader taking an id");
+    contains(t, &source, "// `File` cannot be rebuilt from an id");
+    excludes(t, &source, "/// `File` cannot be rebuilt from an id");
+}
+
+/// On a schema with no loaders, an object is rebuilt through `node(id:)`.
+///
+/// Dagger 1.0 dropped all 66 `loadXFromID` root fields for one Relay-style
+/// `node`, which is typed as an interface — so the chain needs an inline
+/// fragment to name the type it is really reading. Without this the generated
+/// bindings declare no `ObjectId` at all against a 1.0 engine, and a module
+/// function can neither take an object nor return one.
+fn TestObjectsCrossTheBoundaryByNode(t: &mut testing::T) {
+    let source = render_node_fixture(t);
+
+    contains(t, &source, "impl crate::ObjectId for Container {");
+    contains(
+        t,
+        &source,
+        "            Chain::root().field_on(\"node\", __id.finish(), \"Container\"),",
+    );
+    // `to_id` is unchanged: an id is an id however it is loaded back.
+    contains(
+        t,
+        &source,
+        "        engine::fetch(&*self.transport, &self.q, &Leaf::<string>::new(\"id\"))",
+    );
+    // Nothing should reach for a loader this schema does not have.
+    excludes(t, &source, "loadContainerFromID");
+}
+
+/// A loader is preferred over `node` when the schema still has one.
+///
+/// Both spellings have to keep working: the pre-1.0 engines carry loaders, 1.0
+/// carries `node`, and a generator that picked the new one unconditionally
+/// would trade one engine for the other.
+fn TestLoaderIsPreferredOverNode(t: &mut testing::T) {
+    let source = render_fixture(t);
+
+    contains(
+        t,
+        &source,
+        "            Chain::root().field(\"loadContainerFromID\", __id.finish()),",
+    );
+    excludes(t, &source, "field_on(\"node\"");
+}
+
+/// An object list is rebuilt through `node` too, element by element.
+///
+/// The ids come back in one round trip and each element then stands on its own
+/// chain — the shape nothing but a live engine could otherwise check.
+///
+/// `Orphan` stays skipped even here, and that is the control: it has no `id`
+/// field at all, so no amount of `node` can rebuild it.
+fn TestObjectListsRebuildThroughNode(t: &mut testing::T) {
+    let source = render_node_fixture(t);
+
+    contains(
+        t,
+        &source,
+        "    pub fn crumbs(&self) -> Result<slice<Crumb>, string> {",
+    );
+    contains(
+        t,
+        &source,
+        "                Crumb::new(self.transport.clone(), Chain::root().field_on(\"node\", __id.finish(), \"Crumb\"))",
+    );
+
+    excludes(t, &source, "slice<Orphan>");
+    contains(
+        t,
+        &source,
+        "    // `orphans` is a list of `Orphan`, which cannot be rebuilt from an id",
+    );
 }
 
 /// Enums carry their schema spelling in both directions, and a GraphQL enum
@@ -541,6 +625,11 @@ fn excludes(t: &mut testing::T, source: &string, unwanted: &'static str) {
 /// input object, an acronym in a field name, and a deprecated field.
 const FIXTURE: &str = include_str!("fixture.json");
 
+/// The same miniature schema in the shape Dagger 1.0 uses: no per-type
+/// `loadXFromID` fields, one `node(id: ID!): Node` in their place, and a single
+/// `ID` scalar instead of `ContainerID` and `CrumbID`.
+const FIXTURE_NODE: &str = include_str!("fixture-node.json");
+
 #[goish::main]
 fn main() {
     let tests: &[(&str, testing::TestFn)] = &[
@@ -582,6 +671,15 @@ fn main() {
         (
             "TestObjectWithoutALoaderIsNotAnObjectId",
             TestObjectWithoutALoaderIsNotAnObjectId,
+        ),
+        (
+            "TestObjectsCrossTheBoundaryByNode",
+            TestObjectsCrossTheBoundaryByNode,
+        ),
+        ("TestLoaderIsPreferredOverNode", TestLoaderIsPreferredOverNode),
+        (
+            "TestObjectListsRebuildThroughNode",
+            TestObjectListsRebuildThroughNode,
         ),
         ("TestEnums", TestEnums),
         ("TestInputObjects", TestInputObjects),

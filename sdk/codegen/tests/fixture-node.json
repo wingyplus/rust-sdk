@@ -1,0 +1,820 @@
+{
+ "__schema": {
+  "queryType": {
+   "name": "Query"
+  },
+  "mutationType": null,
+  "subscriptionType": null,
+  "types": [
+   {
+    "kind": "OBJECT",
+    "name": "Query",
+    "description": null,
+    "fields": [
+     {
+      "name": "container",
+      "description": "A container.",
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Container",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "version",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "node",
+      "description": "Load any object by its id.",
+      "args": [
+       {
+        "name": "id",
+        "description": null,
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "ID",
+          "ofType": null
+         }
+        },
+        "defaultValue": null
+       }
+      ],
+      "type": {
+       "kind": "INTERFACE",
+       "name": "Node",
+       "ofType": null
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     }
+    ],
+    "inputFields": null,
+    "interfaces": [],
+    "enumValues": null,
+    "possibleTypes": null
+   },
+   {
+    "kind": "OBJECT",
+    "name": "Container",
+    "description": "An OCI container.",
+    "fields": [
+     {
+      "name": "id",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "stdout",
+      "description": "The command's standard output.\n\nEmpty until something has run.",
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "platform",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Platform",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "envVariable",
+      "description": null,
+      "args": [
+       {
+        "name": "name",
+        "description": null,
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        },
+        "defaultValue": null
+       }
+      ],
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "withExec",
+      "description": null,
+      "args": [
+       {
+        "name": "args",
+        "description": null,
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+           "kind": "NON_NULL",
+           "name": null,
+           "ofType": {
+            "kind": "SCALAR",
+            "name": "String",
+            "ofType": null
+           }
+          }
+         }
+        },
+        "defaultValue": null
+       },
+       {
+        "name": "stdin",
+        "description": "Fed to the command.",
+        "type": {
+         "kind": "SCALAR",
+         "name": "String",
+         "ofType": null
+        },
+        "defaultValue": "\"\""
+       },
+       {
+        "name": "expand",
+        "description": null,
+        "type": {
+         "kind": "SCALAR",
+         "name": "Boolean",
+         "ofType": null
+        },
+        "defaultValue": "false"
+       },
+       {
+        "name": "compression",
+        "description": null,
+        "type": {
+         "kind": "ENUM",
+         "name": "Compression",
+         "ofType": null
+        },
+        "defaultValue": null
+       }
+      ],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Container",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "file",
+      "description": null,
+      "args": [
+       {
+        "name": "path",
+        "description": null,
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        },
+        "defaultValue": null
+       }
+      ],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "File",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "asService",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "OBJECT",
+       "name": "Service",
+       "ofType": null
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "crumbs",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "OBJECT",
+          "name": "Crumb",
+          "ofType": null
+         }
+        }
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "orphans",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "OBJECT",
+          "name": "Orphan",
+          "ofType": null
+         }
+        }
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "entries",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+         }
+        }
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "r",
+      "description": null,
+      "args": [
+       {
+        "name": "enum",
+        "description": null,
+        "type": {
+         "kind": "SCALAR",
+         "name": "Boolean",
+         "ofType": null
+        },
+        "defaultValue": null
+       }
+      ],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "ref",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "loop",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "withGPU",
+      "description": null,
+      "args": [
+       {
+        "name": "devices",
+        "description": null,
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+           "kind": "NON_NULL",
+           "name": null,
+           "ofType": {
+            "kind": "SCALAR",
+            "name": "String",
+            "ofType": null
+           }
+          }
+         }
+        },
+        "defaultValue": null
+       }
+      ],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Container",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "build",
+      "description": null,
+      "args": [
+       {
+        "name": "buildArgs",
+        "description": null,
+        "type": {
+         "kind": "LIST",
+         "name": null,
+         "ofType": {
+          "kind": "NON_NULL",
+          "name": null,
+          "ofType": {
+           "kind": "INPUT_OBJECT",
+           "name": "BuildArg",
+           "ofType": null
+          }
+         }
+        },
+        "defaultValue": null
+       }
+      ],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "OBJECT",
+        "name": "Container",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "legacy",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "isDeprecated": true,
+      "deprecationReason": "Use stdout instead."
+     }
+    ],
+    "inputFields": null,
+    "interfaces": [],
+    "enumValues": null,
+    "possibleTypes": null
+   },
+   {
+    "kind": "OBJECT",
+    "name": "File",
+    "description": null,
+    "fields": [
+     {
+      "name": "id",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "contents",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "size",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "Int",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     }
+    ],
+    "inputFields": null,
+    "interfaces": [],
+    "enumValues": null,
+    "possibleTypes": null
+   },
+   {
+    "kind": "OBJECT",
+    "name": "Service",
+    "description": null,
+    "fields": [
+     {
+      "name": "id",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "hostname",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     }
+    ],
+    "inputFields": null,
+    "interfaces": [],
+    "enumValues": null,
+    "possibleTypes": null
+   },
+   {
+    "kind": "OBJECT",
+    "name": "Crumb",
+    "description": null,
+    "fields": [
+     {
+      "name": "id",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "name",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     }
+    ],
+    "inputFields": null,
+    "interfaces": [],
+    "enumValues": null,
+    "possibleTypes": null
+   },
+   {
+    "kind": "OBJECT",
+    "name": "Orphan",
+    "description": null,
+    "fields": [
+     {
+      "name": "name",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     }
+    ],
+    "inputFields": null,
+    "interfaces": [],
+    "enumValues": null,
+    "possibleTypes": null
+   },
+   {
+    "kind": "ENUM",
+    "name": "Compression",
+    "description": "How to compress.",
+    "fields": null,
+    "inputFields": null,
+    "interfaces": null,
+    "enumValues": [
+     {
+      "name": "Gzip",
+      "description": null,
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "GZIP",
+      "description": null,
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "ZSTD",
+      "description": null,
+      "isDeprecated": false,
+      "deprecationReason": null
+     },
+     {
+      "name": "PER_FILE",
+      "description": null,
+      "isDeprecated": false,
+      "deprecationReason": null
+     }
+    ],
+    "possibleTypes": null
+   },
+   {
+    "kind": "INPUT_OBJECT",
+    "name": "BuildArg",
+    "description": "A build argument.",
+    "fields": null,
+    "interfaces": null,
+    "enumValues": null,
+    "possibleTypes": null,
+    "inputFields": [
+     {
+      "name": "name",
+      "description": null,
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "defaultValue": null
+     },
+     {
+      "name": "value",
+      "description": null,
+      "type": {
+       "kind": "SCALAR",
+       "name": "String",
+       "ofType": null
+      },
+      "defaultValue": null
+     }
+    ]
+   },
+   {
+    "kind": "SCALAR",
+    "name": "String",
+    "ofType": null
+   },
+   {
+    "kind": "SCALAR",
+    "name": "Boolean",
+    "ofType": null
+   },
+   {
+    "kind": "SCALAR",
+    "name": "Int",
+    "ofType": null
+   },
+   {
+    "kind": "SCALAR",
+    "name": "ID",
+    "ofType": null
+   },
+   {
+    "kind": "SCALAR",
+    "name": "Platform",
+    "ofType": null
+   },
+   {
+    "kind": "OBJECT",
+    "name": "__Type",
+    "description": null,
+    "fields": [
+     {
+      "name": "name",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     }
+    ],
+    "inputFields": null,
+    "interfaces": [],
+    "enumValues": null,
+    "possibleTypes": null
+   },
+   {
+    "kind": "INTERFACE",
+    "name": "Node",
+    "description": "An object with an id.",
+    "fields": [
+     {
+      "name": "id",
+      "description": null,
+      "args": [],
+      "type": {
+       "kind": "NON_NULL",
+       "name": null,
+       "ofType": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+       }
+      },
+      "isDeprecated": false,
+      "deprecationReason": null
+     }
+    ],
+    "inputFields": null,
+    "enumValues": null
+   }
+  ],
+  "directives": []
+ }
+}

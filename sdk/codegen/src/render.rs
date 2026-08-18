@@ -464,28 +464,22 @@ impl<'a> Renderer<'a> {
     /// starts a fresh chain at the type's loader, and `to_id` runs the chain it
     /// is called on and reads the id off the end.
     ///
-    /// It takes both a loader and an `id` field to do that, and a type missing
+    /// It takes an `id` field and some way to load one back, and a type missing
     /// either simply does not implement the trait — using one in a signature is
     /// then a compile error in the module, which is where it belongs. Almost
-    /// everything in the engine's schema has both: of the 70 objects in v0.21,
-    /// the four without are `Query`, the `Node` interface, and the two
-    /// `_DirectiveApplication` types.
+    /// everything in the engine's schema has both; the handful without are the
+    /// query root, the `Node` interface itself, and the directive types.
     fn object_id(&mut self, ty: &Type) {
-        let loader = self.loader(&ty.name);
-        let id_type = self.id_type(&ty.name);
-        let loader = match (loader, id_type) {
-            // Every id in this schema is an `ID`-family scalar, which is text.
-            // Anything else could not be handed back to a loader that takes
-            // one, so it counts as no id at all.
-            (Some(loader), Some(id_type)) if id_type == "string" => loader,
-            _ => {
+        let load = match self.load_by(&ty.name) {
+            Some(load) => load,
+            None => {
                 // A plain comment, not a doc comment: `impl` blocks are what
                 // surround it, and a `///` here would document whichever item
                 // came next.
                 self.w(fmt::Sprintf!(
                     concat!(
-                        "// `%s` has no loader taking an id, so it cannot be rebuilt from one: it is not an\n",
-                        "// `ObjectId`, and a module function cannot take or return it.\n",
+                        "// `%s` cannot be rebuilt from an id: it is not an `ObjectId`, and a module\n",
+                        "// function cannot take or return it.\n",
                         "\n",
                     ),
                     ty.name
@@ -502,7 +496,7 @@ impl<'a> Renderer<'a> {
                 "        __id.put(\"id\", arg_string(id));\n",
                 "        %s::new(\n",
                 "            engine::default_transport(),\n",
-                "            Chain::root().field(%q, __id.finish()),\n",
+                "            %s,\n",
                 "        )\n",
                 "    }\n",
                 "\n",
@@ -515,7 +509,7 @@ impl<'a> Renderer<'a> {
             ty.name,
             ty.name,
             ty.name,
-            loader
+            self.load_chain(&load, &ty.name)
         ));
     }
 
@@ -742,21 +736,19 @@ impl<'a> Renderer<'a> {
         }
 
         // A list of objects. There is no chain that points at one element, so
-        // the ids are fetched and each element rebuilt from its loader.
+        // the ids are fetched and each element rebuilt from its own id.
         let element = field.ty.name.clone();
-        let loader = self.loader(&element);
-        let id_type = self.id_type(&element);
-        let (loader, id_type) = match (loader, id_type) {
-            (Some(loader), Some(id_type)) => (loader, id_type),
-            _ => {
+        let load = match self.load_by(&element) {
+            Some(load) => load,
+            None => {
                 // A plain comment, not a doc comment: there is no item after it
                 // to document, and a `///` with nothing under it would attach
                 // itself to whatever method came next.
                 self.w(fmt::Sprintf!(
                     concat!(
                         "\n",
-                        "    // `%s` is a list of `%s`, which has no loader, so an element cannot be rebuilt on its own.\n",
-                        "    // Read it through `fetch` instead, which needs no id.\n",
+                        "    // `%s` is a list of `%s`, which cannot be rebuilt from an id, so an element\n",
+                        "    // cannot stand on its own. Read it through `fetch` instead, which needs no id.\n",
                     ),
                     rust_name(&field.name),
                     element
@@ -764,6 +756,10 @@ impl<'a> Renderer<'a> {
                 return;
             }
         };
+        // Checked by `load_by`, which rejects anything an id cannot round-trip
+        // through; naming it here keeps the emitted local's type honest.
+        let id_type = string("string");
+        let element_chain = self.load_chain(&load, &element);
 
         let element = field.ty.name.clone();
         let builder = builder_call("ListField", &(element.clone() + "Fields"), field);
@@ -794,9 +790,9 @@ impl<'a> Renderer<'a> {
                 r.w("            out = append!(\n");
                 r.w("                out,\n");
                 r.w(fmt::Sprintf!(
-                    "                %s::new(self.transport.clone(), Chain::root().field(%q, __id.finish()))\n",
+                    "                %s::new(self.transport.clone(), %s)\n",
                     element,
-                    loader
+                    element_chain
                 ));
                 r.w("            );\n");
                 r.w("            i += 1;\n");
@@ -844,6 +840,59 @@ impl<'a> Renderer<'a> {
         query.field(loader.clone()).map(|_| loader)
     }
 
+    /// Whether the schema offers the Relay-style `node(id:)` root field.
+    fn has_node(&self) -> bool {
+        match self.schema.find(&self.schema.query_type) {
+            Some(query) => query.field("node").is_some(),
+            None => false,
+        }
+    }
+
+    /// How an object of this type is rebuilt from an id, if it can be.
+    ///
+    /// Two schemas to satisfy, and the order matters. Engines through v0.21
+    /// carry a `loadXFromID` per type; 1.0 dropped all of them for a single
+    /// `node(id: ID!): Node`, and collapsed the per-type `ContainerID` and
+    /// `DirectoryID` scalars into one `ID`. Preferring the loader where one
+    /// exists keeps the bindings this generator emits working against both,
+    /// rather than trading one engine for the other.
+    ///
+    /// Either way it takes an `id` field that is text: a nullable or list-typed
+    /// id could not be handed back, so it counts as no id at all.
+    fn load_by(&self, name: &string) -> Option<LoadBy> {
+        match self.id_type(name) {
+            // Pre-1.0 these are `ContainerID` and friends, in 1.0 a bare `ID`;
+            // both map to `string`, and anything else could not round-trip.
+            Some(id_type) if id_type == "string" => {}
+            _ => return None,
+        }
+
+        if let Some(loader) = self.loader(name) {
+            return Some(LoadBy::Loader(loader));
+        }
+        if self.has_node() {
+            return Some(LoadBy::Node);
+        }
+        None
+    }
+
+    /// The chain expression that starts at an object rebuilt from `__id`.
+    ///
+    /// `node` is typed as the `Node` interface, whose only field is `id`, so
+    /// reading anything else off it needs an inline fragment — which is what
+    /// `Chain::field_on` renders.
+    fn load_chain(&self, load: &LoadBy, name: &string) -> string {
+        match load {
+            LoadBy::Loader(loader) => {
+                fmt::Sprintf!("Chain::root().field(%q, __id.finish())", loader.clone())
+            }
+            LoadBy::Node => fmt::Sprintf!(
+                "Chain::root().field_on(\"node\", __id.finish(), %q)",
+                name.clone()
+            ),
+        }
+    }
+
     /// The Rust type `name`'s own `id` field decodes to.
     ///
     /// A nullable or list-typed `id` would not round-trip through a loader, so
@@ -876,6 +925,18 @@ impl<'a> Renderer<'a> {
             i += 1;
         }
     }
+}
+
+/// How the schema lets an object be rebuilt from an id.
+///
+/// The two spellings the engine has used. See [`Renderer::load_by`] for why
+/// both are supported rather than just the current one.
+enum LoadBy {
+    /// A per-type root field, `loadContainerFromID(id:)`. Engines through v0.21.
+    Loader(string),
+    /// The single Relay-style `node(id:)`, narrowed by an inline fragment to
+    /// the type being rebuilt. Dagger 1.0 and later.
+    Node,
 }
 
 // ─── naming and typing, without the renderer ──────────────────────────

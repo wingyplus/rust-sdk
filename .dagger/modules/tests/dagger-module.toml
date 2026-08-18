@@ -1,0 +1,13 @@
+name = "tests"
+engineVersion = "latest"
+
+[runtime]
+  source = "dang"
+
+[[dependencies]]
+  name = "polyfill"
+  source = "github.com/dagger/polyfill@main"
+
+[[dependencies]]
+  name = "mod-test"
+  source = "github.com/dagger/sdk-sdk/mod-test"

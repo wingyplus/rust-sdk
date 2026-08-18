@@ -689,6 +689,12 @@ pub fn arg_list<T: ToArg>(items: &[T]) -> string {
 struct Step {
     name: &'static str,
     args: string,
+    /// The type an inline fragment narrows this step to, or `""` for none.
+    ///
+    /// Needed by exactly one field, and it is the one every object goes
+    /// through: `node(id:)` is typed as the `Node` interface, whose only field
+    /// is `id`, so reading anything else off it takes `... on Container`.
+    fragment: &'static str,
 }
 
 /// The lazily-built path from the query root to the object a selection is
@@ -722,26 +728,61 @@ impl Chain {
     /// untouched, so a partially-built object can be reused for two calls.
     pub fn field(&self, name: &'static str, args: string) -> Chain {
         Chain {
-            steps: append!(self.steps.clone(), Step { name, args }),
+            steps: append!(
+                self.steps.clone(),
+                Step {
+                    name,
+                    args,
+                    fragment: "",
+                }
+            ),
+        }
+    }
+
+    /// Extend the chain by one field, narrowed to `fragment` by an inline
+    /// fragment: `name(args){... on Fragment{`.
+    ///
+    /// This exists for `node(id:)`, which is how an object is rebuilt from its
+    /// id — the engine dropped the per-type `loadXFromID` loaders in favour of
+    /// one Relay-style `node`, and `node` is typed as an interface. Without the
+    /// fragment the server rejects every field but `id`.
+    ///
+    /// A fragment adds a brace to the *query* and no level to the *response*,
+    /// which is why [`decode`](Chain::decode) does not mention it.
+    pub fn field_on(&self, name: &'static str, args: string, fragment: &'static str) -> Chain {
+        Chain {
+            steps: append!(self.steps.clone(), Step {
+                name,
+                args,
+                fragment
+            }),
         }
     }
 
     /// The full query document for `sel` taken at the end of this chain.
     pub fn render<S: Sel>(&self, sel: &S) -> string {
         let mut out = string("{");
+        let mut fragments: int = 0;
         let mut i: int = 0;
         while i < self.steps.Len() {
             out += self.steps[i].name;
             out += self.steps[i].args.clone();
             out += "{";
+            if self.steps[i].fragment.len() > 0 {
+                out += "... on ";
+                out += self.steps[i].fragment;
+                out += "{";
+                fragments += 1;
+            }
             i += 1;
         }
 
         let mut n: usize = 0;
         sel.render(&mut out, &mut n);
 
-        // One closer per step, plus the document's own brace.
-        let mut closers = self.steps.Len() + 1;
+        // One closer per step and one per inline fragment, plus the document's
+        // own brace.
+        let mut closers = self.steps.Len() + fragments + 1;
         while closers > 0 {
             out += "}";
             closers -= 1;

@@ -1,0 +1,68 @@
+"""
+Checks for engine objects crossing the module call boundary.
+
+An object is passed to a module, and returned from one, as an engine ID: an
+argument arrives as an ID and is rebuilt through `ObjectId::from_id`, and a
+returned one is resolved back to its ID, which is a round trip and so can fail.
+`sdk/codegen` emits that impl for every object the engine has a loader for, and
+nothing until now called one.
+"""
+type ObjectChecks {
+  let harness: TestHarness!
+
+  """
+  A `Directory` argument the caller passes should reach the function.
+  """
+  pub acceptsADirectory(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+
+    harness.modTarget(ws).assertJsonOutput(
+      ["count-entries", "--dir", target.modulePath + "/testdata"],
+      "4",
+      "a Directory argument should be rebuilt from its id and carry its entries",
+    )
+  }
+
+  """
+  `default_path` and `ignore` should load a contextual argument the caller never
+  supplies, and filter it.
+
+  Both options apply to a `Directory` or `File` only, the way the engine has it;
+  writing either on a scalar is a compile error naming the parameter, which is
+  `sdk/macros`'s business rather than this suite's. What is checked here is that
+  the engine honours them: `testdata/` arrives with no argument given, and
+  `notes.log` does not arrive at all.
+  """
+  pub loadsAContextualDirectory(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonStringContains(
+      ["entries"],
+      "a.txt",
+      "default_path should load testdata/ when the caller passes nothing",
+    )
+    target.assertJsonStringContains(["entries"], "b.txt", "default_path should load testdata/")
+
+    # Spelled out rather than reached for: mod-test's negative assertion is
+    # `assertJsonListNotContains`, which looks for a *quoted* element of a JSON
+    # list. This function returns a joined string, so that would never match and
+    # would pass whatever the directory contained.
+    let listed = target.tryCall(["entries"])
+    listed.assertSuccess
+    assert("ignore should drop *.log before the function sees the directory") {
+      listed.stdout.contains("notes.log") == false
+    }
+  }
+
+  """
+  A function returning an object should hand back something the CLI can go on
+  chaining from.
+  """
+  pub returnsAContainer(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonString(
+      ["container-out", "stdout"],
+      "container-out",
+      "a returned Container should resolve to an id the CLI can chain from",
+    )
+  }
+}

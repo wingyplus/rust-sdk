@@ -1,0 +1,100 @@
+"""
+Checks for the function and argument surface `sdk/macros` declares.
+
+`sdk/macros` is a proc-macro crate, so it is built for the host and has no goish
+in it, and its tests are ordinary `#[test]` functions. They reach the type
+mapping and the text emitted for one hand-built signature, and no further: the
+`proc_macro` API panics when called outside a macro expansion, so nothing that
+touches a `TokenTree` is testable there. These checks are the other half —
+compile a module that uses the whole attribute surface, and call it.
+"""
+type DeclarationChecks {
+  let harness: TestHarness!
+
+  """
+  A function should take an argument and return a value.
+  """
+  pub roundTripsAnArgument(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonString(["echo", "--string-arg", "hi"], "hi")
+  }
+
+  """
+  `#[dagger(default = ...)]` should apply when the caller omits the argument,
+  and yield to the caller when they do not.
+
+  All three literal shapes are here on purpose: a quoted string, a bare integer
+  and a bare `true` reach the macro as different token trees.
+  """
+  pub defaultsApply(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonString(["with-default"], "hello")
+    target.assertJsonString(["with-default", "--value", "supplied"], "supplied")
+    target.assertJsonOutput(["with-default-int"], "3")
+    target.assertJsonOutput(["with-default-int", "--n", "7"], "7")
+    target.assertJsonOutput(["with-default-bool"], "true")
+    # `--flag=false`, not `--flag false`: a boolean flag takes its value
+    # attached, and the split form makes the CLI read `false` as a subcommand.
+    target.assertJsonOutput(["with-default-bool", "--flag=false"], "false")
+  }
+
+  """
+  An `Option<T>` argument should be optional, and arrive as absent when omitted.
+
+  There is no `+optional` marker to write in Rust — optionality is carried by
+  the type — so this is the only thing that shows the macro read it.
+  """
+  pub optionalArgumentsMayBeOmitted(ws: Workspace!): Void @check {
+    let target = harness.modTarget(ws)
+
+    target.assertJsonString(["optional-arg"], "none")
+    target.assertJsonString(["optional-arg", "--value", "v"], "some:v")
+  }
+
+  """
+  A failing function should exit non-zero.
+
+  `dagger::fail` writes to stderr and exits 2; what matters is that the CLI sees
+  a failure rather than an empty success.
+  """
+  pub failuresPropagate(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertFailure(["boom"], "boom should exit non-zero")
+  }
+
+  """
+  `#[dagger(doc = ...)]` and `#[dagger(deprecated = ...)]` should reach the
+  engine.
+
+  Both are declaration metadata with no behavioural shadow, so unlike everything
+  else here they cannot be asserted by calling the function.
+
+  They are also not read back the same way. A description survives into the
+  CLI's own help, which is where a user meets it. A deprecation does not — the
+  help for a deprecated argument is indistinguishable from any other — so the
+  only place to see whether the macro declared it is the schema the module
+  serves.
+  """
+  pub argumentMetadataIsDeclared(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+
+    target
+      .run(["api", "call", "-m", "/work/" + target.modulePath, "documented", "--help"])
+      .assertStdoutContains(
+        "The value to echo back",
+        "the doc option should become the argument's description",
+      )
+
+    # `includeDeprecated: true` is not optional here, and leaving it off looks
+    # like the macro dropped the argument: GraphQL hides deprecated items from
+    # introspection by default, so `deprecatedArg` comes back with no arguments
+    # at all rather than with a deprecated one.
+    target
+      .query(
+        "{__type(name:\"FeatureMatrix\"){fields{name args(includeDeprecated:true){name deprecationReason}}}}",
+      )
+      .assertStdoutContains(
+        "use documented instead",
+        "the deprecated option should reach the schema as the argument's deprecationReason",
+      )
+  }
+}
