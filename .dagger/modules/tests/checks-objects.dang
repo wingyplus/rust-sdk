@@ -124,10 +124,17 @@ type ObjectChecks {
   Nothing about a present `Container` shows that, since resolving one is what it
   is supposed to do.
 
-  The null is asserted without chaining. `dagger call optional-container` on its
-  own ends at the object, which the CLI prints as an id or as `null`; chaining
-  `stdout` off nothing would assert GraphQL's null propagation rather than this
-  SDK's encoding.
+  Both halves are read through a field selected off the container rather than
+  from the object itself, and that is the CLI's constraint rather than a choice:
+  `dagger call optional-container` on its own ends at the object, and `printID`
+  in v1.0.0-beta.9 — the release mod-test installs — has no case for a nil
+  response, so it fails the call with `printID: unexpected type for object:
+  <nil>` whatever the module returned. Upstream has since grown that case;
+  selecting a field works on both.
+
+  Selecting `stdout` still tells the three outcomes apart, which is all the
+  assertion needs: a resolved id prints what the container echoed, a failure
+  exits non-zero, and only a null prints `null`.
   """
   pub returnsAnOptionalContainer(ws: Workspace!): Void @check {
     let target = harness.modTarget(ws)
@@ -138,7 +145,7 @@ type ObjectChecks {
       "a Some should resolve to an id the CLI can chain from",
     )
     target.assertJsonOutput(
-      ["optional-container"],
+      ["optional-container", "stdout"],
       "null",
       "a None should be a null rather than a resolved id or a failure",
     )
