@@ -26,8 +26,9 @@ use core::cell::RefCell;
 use dagger::json_string;
 use dagger::querybuilder::{Chain, Field, Fields, Leaf, ListField, OptField, Sel};
 use dagger::engine::Transport;
+use dagger::{Arguments, EnumType, Object};
 use goish::encoding::json;
-use goish::{bytes, fmt, int, nil, os, slice, string, testing};
+use goish::{append, bytes, fmt, int, make, nil, os, slice, string, testing};
 
 // ─── the shape codegen will emit ──────────────────────────────────────
 
@@ -722,6 +723,179 @@ fn TestDecodeErrorsNameWhatWentWrong(t: &mut testing::T) {
     }
 }
 
+// ─── enums a module declares ──────────────────────────────────────────
+
+/// An enum a module might declare.
+///
+/// The attribute is the point as much as the type is: `sdk/macros`'s own suite
+/// builds its values by hand, because the `proc_macro` API panics outside a
+/// macro expansion, so an actual `enum` going through `#[dagger::enum_type]` is
+/// only ever compiled here and in the end-to-end fixture.
+#[dagger::enum_type]
+enum TargetOs {
+    /// Alpine Linux.
+    Alpine,
+    /// Debian.
+    Debian,
+}
+
+/// The `inputArgs` of a call, as `serve` hands them over: each value is still
+/// the JSON *text* the engine encoded it into.
+fn arguments(entries: &[(&'static str, &'static str)]) -> Arguments {
+    let mut pairs = make!([](string, string), 0, entries.len() as int);
+    for (name, value) in entries {
+        pairs = append!(pairs, (string(*name), string(*value)));
+    }
+    Arguments::new(pairs)
+}
+
+/// An enum argument arrives as one member's name — not as an ID, the way an
+/// object does — and an absent optional as nothing at all.
+fn TestEnumArgumentsArriveAsAMemberName(t: &mut testing::T) {
+    let args = arguments(&[("os", "\"Alpine\""), ("fallback", "null"), ("count", "3")]);
+
+    match args.enum_member("os") {
+        Ok(member) => assert_string(t, "the member name", member, "Alpine"),
+        Err(why) => t.Error(fmt::Sprintf!("reading an enum argument: %s", why)),
+    }
+
+    match args.enum_member_opt("fallback") {
+        Ok(None) => {}
+        Ok(Some(member)) => t.Error(fmt::Sprintf!("an absent optional read as %q", member)),
+        Err(why) => t.Error(fmt::Sprintf!("reading an absent optional: %s", why)),
+    }
+
+    // The two ways it can be wrong, and both name the argument: the engine
+    // supplies an enum the module declared, so either is the two sides
+    // disagreeing rather than a caller's mistake.
+    match args.enum_member("missing") {
+        Ok(member) => t.Error(fmt::Sprintf!("a missing argument read as %q", member)),
+        Err(why) => assert_contains(t, "a missing enum argument", why, "missing"),
+    }
+    match args.enum_member("count") {
+        Ok(member) => t.Error(fmt::Sprintf!("a number read as the member %q", member)),
+        Err(why) => assert_contains(t, "a number as an enum", why, "enum member"),
+    }
+}
+
+/// A member crosses the boundary as its name in both directions, spelled as the
+/// variant is: `from_member` reads what an argument carried, `encode_enum`
+/// writes what a return carries, and the two agree.
+fn TestEnumMembersRoundTripThroughTheirNames(t: &mut testing::T) {
+    let os = match TargetOs::from_member(&string("Debian")) {
+        Ok(os) => os,
+        Err(why) => t.Fatal(fmt::Sprintf!("from_member: %s", why)),
+    };
+    assert_string(t, "the member", string(os.member()), "Debian");
+    assert_string(t, "the encoded member", dagger::encode_enum(&os), "\"Debian\"");
+
+    // The engine's own spelling of the member — what a caller writes — is not
+    // what a module deals in, and reading one back would be accepting a name
+    // this side never declared.
+    match TargetOs::from_member(&string("DEBIAN")) {
+        Ok(_) => t.Error("the schema's spelling of a member was accepted"),
+        Err(why) => assert_contains(t, "an unknown member", why, "DEBIAN"),
+    }
+}
+
+/// What `register` is handed for an enum: the type's name and doc comment, and
+/// every variant with its own.
+fn TestAnEnumDeclaresItsMembers(t: &mut testing::T) {
+    let def = TargetOs::DEF;
+    assert_string(t, "the enum name", string(def.name), "TargetOs");
+    assert_contains(t, "the enum doc", string(def.doc), "An enum a module might declare.");
+
+    if def.members.len() != 2 {
+        t.Fatal(fmt::Sprintf!("declared %d members, want 2", def.members.len() as int));
+    }
+    assert_string(t, "the first member", string(def.members[0].name), "Alpine");
+    assert_string(t, "its doc", string(def.members[0].doc), "Alpine Linux.");
+    assert_string(t, "the second member", string(def.members[1].name), "Debian");
+}
+
+/// A module that declares an enum, as a user writes one.
+///
+/// Compiled here rather than only in the end-to-end fixture because this is
+/// what the two halves of the declaration meeting looks like: the enum above
+/// says what its members are, `enums(TargetOs)` says the module serves it, and
+/// what `#[dagger::object]` emits for a signature naming it has to build and
+/// dispatch. Everything below reaches it without an engine, since neither the
+/// table nor the dispatch is a round trip.
+struct EnumModule;
+
+#[dagger::object(enums(TargetOs))]
+impl EnumModule {
+    /// Return the OS unchanged.
+    #[dagger::function]
+    pub fn echo_os(&self, os: TargetOs) -> TargetOs {
+        os
+    }
+
+    /// Report which libc an OS carries, or that none was chosen.
+    #[dagger::function]
+    pub fn os_libc(&self, os: Option<TargetOs>) -> string {
+        match os {
+            Some(TargetOs::Alpine) => string("musl"),
+            Some(TargetOs::Debian) => string("glibc"),
+            None => string("unset"),
+        }
+    }
+}
+
+/// The enum reaches the table `register` walks: once as the module's own
+/// declaration, and by name in the signature that uses it.
+fn TestAModuleDeclaresTheEnumsItServes(t: &mut testing::T) {
+    let enums = <EnumModule as Object>::enums();
+    if enums.len() != 1 {
+        t.Fatal(fmt::Sprintf!("declared %d enums, want 1", enums.len() as int));
+    }
+    assert_string(t, "the declared enum", string(enums[0].name), "TargetOs");
+
+    let functions = <EnumModule as Object>::functions();
+    let mut found = false;
+    for def in functions {
+        if def.name != "echoOs" {
+            continue;
+        }
+        found = true;
+        assert_string(t, "the return kind", string(def.return_kind), "ENUM_KIND");
+        assert_string(t, "the return type", string(def.return_type_name), "TargetOs");
+        if def.args.len() != 1 {
+            t.Fatal(fmt::Sprintf!("echoOs declared %d arguments, want 1", def.args.len() as int));
+        }
+        assert_string(t, "the argument kind", string(def.args[0].kind), "ENUM_KIND");
+        assert_string(t, "the argument type", string(def.args[0].type_name), "TargetOs");
+    }
+    if !found {
+        t.Error("echoOs is not among the declared functions");
+    }
+}
+
+/// The dispatch reads a member name into a variant and writes one back — and
+/// says so when the name is not one the enum has.
+fn TestDispatchTurnsAMemberNameIntoAVariant(t: &mut testing::T) {
+    match EnumModule::invoke(&string("echoOs"), &arguments(&[("os", "\"Debian\"")])) {
+        Ok(encoded) => assert_string(t, "the encoded return", encoded, "\"Debian\""),
+        Err(why) => t.Error(fmt::Sprintf!("echoOs: %s", why)),
+    }
+
+    // The optional one, supplied and omitted: what the function matched on was
+    // a variant either way.
+    match EnumModule::invoke(&string("osLibc"), &arguments(&[("os", "\"Alpine\"")])) {
+        Ok(encoded) => assert_string(t, "a supplied optional", encoded, "\"musl\""),
+        Err(why) => t.Error(fmt::Sprintf!("osLibc: %s", why)),
+    }
+    match EnumModule::invoke(&string("osLibc"), &arguments(&[("os", "null")])) {
+        Ok(encoded) => assert_string(t, "an omitted optional", encoded, "\"unset\""),
+        Err(why) => t.Error(fmt::Sprintf!("osLibc: %s", why)),
+    }
+
+    match EnumModule::invoke(&string("echoOs"), &arguments(&[("os", "\"PLAN9\"")])) {
+        Ok(encoded) => t.Error(fmt::Sprintf!("an unknown member dispatched to %s", encoded)),
+        Err(why) => assert_contains(t, "an unknown member", why, "PLAN9"),
+    }
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────
 
 /// The depth-3 selection both the render and the decode test are built on:
@@ -827,6 +1001,23 @@ fn main() {
         (
             "TestDecodeErrorsNameWhatWentWrong",
             TestDecodeErrorsNameWhatWentWrong,
+        ),
+        (
+            "TestEnumArgumentsArriveAsAMemberName",
+            TestEnumArgumentsArriveAsAMemberName,
+        ),
+        (
+            "TestEnumMembersRoundTripThroughTheirNames",
+            TestEnumMembersRoundTripThroughTheirNames,
+        ),
+        ("TestAnEnumDeclaresItsMembers", TestAnEnumDeclaresItsMembers),
+        (
+            "TestAModuleDeclaresTheEnumsItServes",
+            TestAModuleDeclaresTheEnumsItServes,
+        ),
+        (
+            "TestDispatchTurnsAMemberNameIntoAVariant",
+            TestDispatchTurnsAMemberNameIntoAVariant,
         ),
     ];
     os::Exit(testing::Main(tests));

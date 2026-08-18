@@ -245,6 +245,42 @@ A list goes one level deep: `slice<slice<T>>` is a compile error, as is
 declares the list optional. An optional return is not supported either. Each is
 a compile error naming what to write instead.
 
+And enums the module itself declares, which are named twice — on the enum, and
+on the `impl` block that serves it:
+
+```rust
+/// The operating system a build targets.
+#[dagger::enum_type]
+pub enum TargetOs {
+    /// Alpine Linux.
+    Alpine,
+    /// Debian.
+    Debian,
+}
+
+#[dagger::object(enums(TargetOs))]
+impl Build {
+    /// Build for one OS.
+    #[dagger::function]
+    pub fn image(&self, os: TargetOs) -> TargetOs {
+        os
+    }
+}
+```
+
+The variant names and their doc comments are what the engine is told, so the
+Go SDK's type-with-string-constants and the TypeScript SDK's `@enumType()` both
+land on an attribute here. The engine publishes each member under its own
+SCREAMING_SNAKE_CASE of the variant — `dagger call image --os ALPINE` — and
+hands the module back the variant's own spelling, so a module never writes a
+member two ways.
+
+Naming it in `enums(...)` is not a convenience: a macro sees one item at a
+time, and Rust has no runtime reflection, so nothing else connects the enum's
+declaration to the module that serves it. A type left out of that list is
+declared as an engine *object* of that name and fails to compile on
+`dagger::ObjectId`, which says so.
+
 ### Failing
 
 A function returns its value directly, or as `Result<T, string>`:
@@ -459,6 +495,12 @@ What works today:
   reaches the caller as the message `dagger::fail` would have written. That is
   what makes `?` usable against a client whose every method is fallible.
 
+- Enums a module declares, with `#[dagger::enum_type]` on the enum and
+  `#[dagger::object(enums(...))]` on the block that serves it — see [Supported
+  types](#supported-types). The variant names and their doc comments are what
+  the engine is registered with, and one member name is what crosses the call
+  boundary in both directions.
+
 What is stubbed:
 
 - **Handing an object back to a client method.** As the example above shows, a
@@ -475,11 +517,12 @@ What is stubbed:
   lists, and a list whose elements are optional, are refused the same way.
 
 Function declaration and dispatch **work**: `#[dagger::object]`,
-`#[dagger::function]` and `#[dagger::check]` read signatures at compile time and
-emit a static table the entrypoint walks, with argument options in
-`#[dagger(...)]` and function options — `generate` — in the marker itself. This
-is the one piece with no Go analogue: the Go SDK recovers signatures by parsing
-the user's package, so it is proc-macros rather than a port.
+`#[dagger::function]`, `#[dagger::check]` and `#[dagger::enum_type]` read
+declarations at compile time and emit a static table the entrypoint walks, with
+argument options in `#[dagger(...)]` and function options — `generate` — in the
+marker itself. This is the one piece with no Go analogue: the Go SDK recovers
+signatures by parsing the user's package, so it is proc-macros rather than a
+port.
 
 `initClient` (typed client generation for non-module consumers) is an optional
 part of the SDK contract and is not implemented.

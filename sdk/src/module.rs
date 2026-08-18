@@ -69,14 +69,15 @@ pub struct ArgDef {
     /// API name, camelCased from the Rust parameter.
     pub name: &'static str,
     /// The engine's TypeDefKind: `STRING_KIND`, `INTEGER_KIND`, `FLOAT_KIND`,
-    /// `BOOLEAN_KIND`, `OBJECT_KIND`.
+    /// `BOOLEAN_KIND`, `OBJECT_KIND`, `ENUM_KIND`.
     pub kind: &'static str,
-    /// For `OBJECT_KIND`, the engine's name for the object — `Directory`,
-    /// `Workspace`. Empty for every other kind.
-    pub object: &'static str,
+    /// For `OBJECT_KIND` and `ENUM_KIND`, the engine's name for the type —
+    /// `Directory`, `Workspace`, or an enum the module declares. Empty for
+    /// every other kind, since the kind alone says what those are.
+    pub type_name: &'static str,
     /// Whether the argument is a *list* of `kind` — `slice<T>` or `Vec<T>` in
-    /// the signature. The kind and object above describe the element, so a list
-    /// is one bool rather than a second copy of both.
+    /// the signature. The kind and type name above describe the element, so a
+    /// list is one bool rather than a second copy of both.
     pub list: bool,
     /// Whether the caller may leave it out — `Option<T>`, or anything with a default.
     ///
@@ -106,9 +107,10 @@ pub struct FunctionDef {
     pub doc: &'static str,
     /// The engine's TypeDefKind for the return value.
     pub return_kind: &'static str,
-    /// For an `OBJECT_KIND` return, the engine's name for the object —
-    /// `Changeset`, `Container`. Empty for every other kind.
-    pub return_object: &'static str,
+    /// For an `OBJECT_KIND` or `ENUM_KIND` return, the engine's name for the
+    /// type — `Changeset`, `Container`, or an enum the module declares. Empty
+    /// for every other kind.
+    pub return_type_name: &'static str,
     /// Whether the function returns a *list* of `return_kind`.
     pub return_list: bool,
     /// From `#[dagger::check]`: `dagger check` runs this function.
@@ -124,6 +126,53 @@ pub struct FunctionDef {
     /// Where the method was written.
     pub source: SourceMapDef,
     pub args: &'static [ArgDef],
+}
+
+/// One member of an enum a module declares.
+pub struct EnumMemberDef {
+    /// The member name, spelled as the Rust variant is.
+    ///
+    /// This is the name the engine records as the member's *original* name, and
+    /// it is the text that crosses the call boundary in both directions — the
+    /// engine hands a module its own spelling and expects it back. The name a
+    /// caller writes is the engine's own SCREAMING_SNAKE_CASE of it, which the
+    /// engine derives and this side never has to.
+    pub name: &'static str,
+    /// The variant's `///` doc comment.
+    pub doc: &'static str,
+}
+
+/// An enum a module declares, as `#[dagger::enum_type]` read it.
+pub struct EnumDef {
+    /// The engine's name for the enum, from the Rust type name.
+    pub name: &'static str,
+    /// The type's `///` doc comment.
+    pub doc: &'static str,
+    pub members: &'static [EnumMemberDef],
+}
+
+/// An enum type a module declares, as `#[dagger::enum_type]` emits it.
+///
+/// An enum crosses the call boundary as one member's name: [`member`] writes
+/// that name, and [`from_member`] reads it back into a variant. Both use the
+/// Rust spelling — see [`EnumMemberDef::name`].
+///
+/// [`member`]: EnumType::member
+/// [`from_member`]: EnumType::from_member
+pub trait EnumType: Sized {
+    /// What `register` tells the engine about this enum.
+    const DEF: EnumDef;
+
+    /// The member name of this value.
+    fn member(&self) -> &'static str;
+
+    /// The value a member name stands for.
+    ///
+    /// Fails when the name is not one of this enum's members. The engine checks
+    /// an incoming argument against the members the module declared, so that is
+    /// a module and an engine disagreeing rather than a caller's mistake — but
+    /// the dispatch has to be able to say so either way.
+    fn from_member(name: &string) -> Result<Self, string>;
 }
 
 /// A module's root object, as declared by `#[dagger::object]`.
@@ -143,6 +192,15 @@ pub trait Object {
 
     /// Everything the module exposes.
     fn functions() -> &'static [FunctionDef];
+
+    /// The enums the module declares, from `#[dagger::object(enums(...))]`.
+    ///
+    /// Defaulted because most modules declare none, and because an `Object`
+    /// impl written before enums existed — by hand, or by an older macro
+    /// vendored alongside — still says everything it meant to.
+    fn enums() -> &'static [EnumDef] {
+        &[]
+    }
 
     /// Call one function by API name and return its JSON-encoded result.
     ///
@@ -333,6 +391,32 @@ impl Arguments {
         }
     }
 
+    /// A required enum argument, as the name of the member the caller chose.
+    ///
+    /// An enum arrives as a member name rather than as an ID: the engine
+    /// resolves whatever the caller wrote — the schema's SCREAMING_SNAKE_CASE
+    /// spelling — back to the name the module registered the member under, so
+    /// what lands here is the Rust variant's own name and the generated
+    /// dispatch turns it into the variant with [`EnumType::from_member`].
+    pub fn enum_member(&self, name: &str) -> Result<string, string> {
+        match self.enum_member_opt(name)? {
+            Some(value) => Ok(value),
+            None => Err(Arguments::missing(name)),
+        }
+    }
+
+    /// An optional enum argument, as the name of the member the caller chose.
+    pub fn enum_member_opt(&self, name: &str) -> Result<Option<string>, string> {
+        match self.lookup(name) {
+            None => Ok(None),
+            Some(value) if value.IsNull() => Ok(None),
+            Some(value) => match value.AsString() {
+                Some(s) => Ok(Some(s.clone())),
+                None => Err(Arguments::wrong_type(name, "an enum member")),
+            },
+        }
+    }
+
     /// A required boolean argument.
     pub fn bool(&self, name: &str) -> Result<bool, string> {
         match self.bool_opt(name)? {
@@ -455,6 +539,16 @@ pub fn encode_bool(value: bool) -> string {
     } else {
         string("false")
     }
+}
+
+/// JSON-encode an enum result as the name of its member.
+///
+/// The same text an enum argument arrives as, going the other way: the engine
+/// matches it against the members the module registered and hands the caller
+/// the schema's own spelling of it. Infallible, unlike [`encode_object`] — the
+/// name is a `&'static str` the macro wrote, not something to go and fetch.
+pub fn encode_enum<T: EnumType>(value: &T) -> string {
+    crate::json_string(&string(value.member()))
 }
 
 /// JSON-encode a function that returns nothing.
@@ -649,7 +743,8 @@ pub fn serve<T: Object>() -> ! {
 /// Describe the module to the engine and return the description's ID.
 ///
 /// Build a `TypeDef` for the root object, hang every declared function off it,
-/// attach it to a `Module`, and hand back the module's ID.
+/// attach it to a `Module` alongside every enum the module declares, and hand
+/// back the module's ID.
 fn register<T: Object>(transport: &dyn Transport) -> Result<string, string> {
     let mut args = Args::new();
     args.put("name", arg_string(T::NAME));
@@ -688,7 +783,18 @@ fn register<T: Object>(transport: &dyn Transport) -> Result<string, string> {
         description.put("description", arg_string(T::DOC));
         module = module.field("withDescription", description.finish());
     }
-    let module = module.field("withObject", args.finish());
+    let mut module = module.field("withObject", args.finish());
+
+    // An enum is declared to the module rather than to the object: a signature
+    // only ever *references* one by name, so this is the one place its members
+    // are written down. `Module.withEnum` takes the TypeDefID of an enum
+    // TypeDef, the way `withObject` takes an object's.
+    for def in T::enums() {
+        let enum_id = build_enum(transport, def)?;
+        let mut args = Args::new();
+        args.put("enum", arg_string(enum_id));
+        module = module.field("withEnum", args.finish());
+    }
     let module_id = fetch_id(transport, &module)?;
 
     // Both paths hand back "a JSON document", so the ID is JSON-encoded here to
@@ -697,10 +803,41 @@ fn register<T: Object>(transport: &dyn Transport) -> Result<string, string> {
     Ok(json_string(&module_id))
 }
 
+/// Build one enum `TypeDef`, members and all, and return its ID.
+///
+/// `withEnumMember` takes the member's name and nothing else. The engine keeps
+/// what it is given as the member's *original* name — what it hands the module
+/// for an argument, and what it expects back for a return — and derives the
+/// name a caller writes from it. It also accepts a `value`, for an SDK whose
+/// members carry a string distinct from their identifier; a Rust variant has no
+/// such thing, so leaving it unset keeps the two spellings the module deals in
+/// down to one.
+fn build_enum(transport: &dyn Transport, def: &EnumDef) -> Result<string, string> {
+    let mut args = Args::new();
+    args.put("name", arg_string(def.name));
+    if !def.doc.is_empty() {
+        args.put("description", arg_string(def.doc));
+    }
+    let mut type_def = Chain::root()
+        .field("typeDef", string(""))
+        .field("withEnum", args.finish());
+
+    for member in def.members {
+        let mut args = Args::new();
+        args.put("name", arg_string(member.name));
+        if !member.doc.is_empty() {
+            args.put("description", arg_string(member.doc));
+        }
+        type_def = type_def.field("withEnumMember", args.finish());
+    }
+
+    fetch_id(transport, &type_def)
+}
+
 /// Build one `Function` and return its ID.
 fn build_function(transport: &dyn Transport, def: &FunctionDef) -> Result<string, string> {
     let return_type =
-        build_type_def(transport, def.return_kind, def.return_object, def.return_list, false)?;
+        build_type_def(transport, def.return_kind, def.return_type_name, def.return_list, false)?;
 
     let mut args = Args::new();
     args.put("name", arg_string(def.name));
@@ -744,7 +881,7 @@ fn build_function(transport: &dyn Transport, def: &FunctionDef) -> Result<string
     }
 
     for arg in def.args {
-        let arg_type = build_type_def(transport, arg.kind, arg.object, arg.list, arg.optional)?;
+        let arg_type = build_type_def(transport, arg.kind, arg.type_name, arg.list, arg.optional)?;
         let mut args = Args::new();
         args.put("name", arg_string(arg.name));
         args.put("typeDef", arg_string(arg_type));
@@ -792,33 +929,37 @@ fn build_source_map(transport: &dyn Transport, def: &SourceMapDef) -> Result<str
 
 /// Build a `TypeDef` of one kind and return its ID.
 ///
-/// `object` names the engine object for `OBJECT_KIND` and is empty otherwise;
-/// an object is described by name rather than by kind, since the kind alone
-/// would not say which object it is.
+/// `type_name` names the engine type for `OBJECT_KIND` and `ENUM_KIND` and is
+/// empty otherwise: those two are described by name rather than by kind, since
+/// the kind alone would not say *which* object or enum it is. An enum is named
+/// here as a reference — the members are declared once, by [`build_enum`].
 ///
 /// A list is a `TypeDef` *wrapping* another one, so `list` makes `kind` and
-/// `object` describe the element: the element is built and resolved to an ID
+/// `type_name` describe the element: the element is built and resolved to an ID
 /// first, and `withListOf` takes that ID. `optional` then applies to the list
 /// rather than to the element, which is what `Option<slice<T>>` means.
 fn build_type_def(
     transport: &dyn Transport,
     kind: &'static str,
-    object: &'static str,
+    type_name: &'static str,
     list: bool,
     optional: bool,
 ) -> Result<string, string> {
     let mut args = Args::new();
     let mut type_def = Chain::root().field("typeDef", string(""));
 
-    if object.is_empty() {
+    if type_name.is_empty() {
         // `kind` is a GraphQL enum literal, so it is spliced unquoted rather
         // than through `arg_string`. It only ever comes from the macro's fixed
-        // set, never from user text. An object's name is a string argument, so
-        // it goes through the usual quoting.
+        // set, never from user text. A named type's name is a string argument,
+        // so it goes through the usual quoting.
         args.put("kind", string(kind));
         type_def = type_def.field("withKind", args.finish());
+    } else if kind == "ENUM_KIND" {
+        args.put("name", arg_string(type_name));
+        type_def = type_def.field("withEnum", args.finish());
     } else {
-        args.put("name", arg_string(object));
+        args.put("name", arg_string(type_name));
         type_def = type_def.field("withObject", args.finish());
     }
 

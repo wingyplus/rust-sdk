@@ -249,6 +249,115 @@ pub fn render(tokens: &[TokenTree]) -> String {
         .to_string()
 }
 
+/// One variant of an enum: its name and its doc comment.
+#[cfg_attr(test, derive(Debug))]
+pub struct Variant {
+    pub name: String,
+    /// Joined `///` lines.
+    pub doc: String,
+}
+
+/// An enum we were asked to declare.
+pub struct Enum {
+    pub name: String,
+    /// Joined `///` lines.
+    pub doc: String,
+    pub variants: Vec<Variant>,
+}
+
+/// Parse an `enum` item into its name, its doc comment and its variants.
+///
+/// Only the shape the engine has an equivalent for is accepted. A variant that
+/// carries data — `Tagged(string)`, `Point { x: int }` — is refused by name:
+/// the engine's enum is a set of names, so there is nowhere for a payload to
+/// go, and a variant with one would otherwise be declared as if it had none and
+/// fail to construct on the way back in.
+///
+/// A discriminant (`Alpine = 1`) is refused for the same reason from the other
+/// side: what crosses the boundary is the member's *name*, so a number written
+/// next to it would be silently dropped rather than being what the engine sees.
+pub fn parse_enum(item: TokenStream) -> Result<Enum, String> {
+    let tokens: Vec<TokenTree> = item.into_iter().collect();
+    let mut cursor = 0;
+
+    let attrs = take_attrs(&tokens, &mut cursor);
+    let doc = join_docs(&attrs);
+
+    // `pub` / `pub(crate)` and friends.
+    while let Some(TokenTree::Ident(id)) = tokens.get(cursor) {
+        if id.to_string() == "pub" {
+            cursor += 1;
+            if let Some(TokenTree::Group(g)) = tokens.get(cursor) {
+                if g.delimiter() == Delimiter::Parenthesis {
+                    cursor += 1;
+                }
+            }
+        } else {
+            break;
+        }
+    }
+
+    match tokens.get(cursor) {
+        Some(TokenTree::Ident(id)) if id.to_string() == "enum" => cursor += 1,
+        _ => return Err("#[dagger::enum_type] expects an `enum`".to_string()),
+    }
+
+    let name = match tokens.get(cursor) {
+        Some(TokenTree::Ident(id)) => id.to_string(),
+        _ => return Err("expected a name after `enum`".to_string()),
+    };
+    cursor += 1;
+
+    let body = match tokens.get(cursor) {
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => g.stream(),
+        // A generic enum never reaches the engine, and neither does anything
+        // else between the name and the body.
+        _ => return Err(format!("`{name}` is not a plain `enum Name {{ … }}`")),
+    };
+
+    let mut variants = Vec::new();
+    let body: Vec<TokenTree> = body.into_iter().collect();
+    for part in split_commas(&body) {
+        let mut cursor = 0;
+        let attrs = take_attrs(&part, &mut cursor);
+        let rest = &part[cursor..];
+
+        let variant = match rest.first() {
+            Some(TokenTree::Ident(id)) => id.to_string(),
+            None => continue,
+            _ => return Err(format!("could not read a variant of `{name}`: {}", render(rest))),
+        };
+
+        variants.push(variant_of(&name, &variant, &render(&rest[1..]), join_docs(&attrs))?);
+    }
+
+    if variants.is_empty() {
+        return Err(format!("`{name}` has no variants; an engine enum needs at least one member"));
+    }
+
+    Ok(Enum { name, doc, variants })
+}
+
+/// One variant, from its name and whatever the declaration wrote after it.
+///
+/// Split out of the walk above so the rule it enforces is reachable from this
+/// crate's own tests: the `proc_macro` API panics outside a macro expansion, so
+/// a test cannot hand [`parse_enum`] an `enum` to read, but it can hand this the
+/// text a variant rendered as.
+pub fn variant_of(
+    enum_name: &str,
+    name: &str,
+    trailing: &str,
+    doc: String,
+) -> Result<Variant, String> {
+    if !trailing.is_empty() {
+        return Err(format!(
+            "`{enum_name}::{name}` carries `{trailing}`; an engine enum is a set of member names, so its variants take no data and no discriminant"
+        ));
+    }
+    Ok(Variant { name: name.to_string(), doc })
+}
+
 /// Join the `///` lines of an attribute list into one description.
 fn join_docs(attrs: &[Attr]) -> String {
     attrs
