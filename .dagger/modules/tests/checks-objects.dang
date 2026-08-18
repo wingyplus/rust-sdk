@@ -65,4 +65,22 @@ type ObjectChecks {
       "a returned Container should resolve to an id the CLI can chain from",
     )
   }
+
+  """
+  A fallible function should be able to return an object too.
+
+  Two failures meet in that one signature and only one of them is new: the
+  dispatch has always had to resolve a returned object's id, which is a round
+  trip, and now the function it resolves for may itself have failed first. The
+  emitted call is `encode_object(&(f())?)?` — the inner `?` the function's, the
+  outer one the id's — and getting the two the wrong way round is a borrow of
+  the `Result` rather than of the object.
+  """
+  pub returnsAContainerFallibly(ws: Workspace!): Void @check {
+    harness.modTarget(ws).assertJsonString(
+      ["try-container-out", "stdout"],
+      "try-object",
+      "a Result<Container, string> should resolve to an id the CLI can chain from",
+    )
+  }
 }

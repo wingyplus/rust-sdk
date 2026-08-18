@@ -199,6 +199,87 @@ fn an_optional_return_is_refused() {
     }
 }
 
+/// A fallible function is declared by what it produces: the engine has no kind
+/// for a failure, so the `Result` is peeled off before the type is mapped.
+#[test]
+fn a_fallible_return_is_declared_by_its_ok_type() {
+    for (ty, kind, object) in [
+        ("Result<string, string>", "STRING_KIND", ""),
+        ("Result<int, string>", "INTEGER_KIND", ""),
+        ("Result<bool, string>", "BOOLEAN_KIND", ""),
+        ("Result<(), string>", "VOID_KIND", ""),
+        ("Result<gen::Container, string>", "OBJECT_KIND", "Container"),
+        // The other error type: goish's `error`, which its own APIs fail with.
+        ("Result<string, error>", "STRING_KIND", ""),
+        ("Result<int, goish::error>", "INTEGER_KIND", ""),
+        // Spelled the long way, as a module that imported neither would.
+        ("core::result::Result<string, goish::gostring::string>", "STRING_KIND", ""),
+    ] {
+        let f = function("attempt", Vec::new(), ty);
+        let def = function_def(&f).unwrap_or_else(|e| panic!("{ty}: {e}"));
+        assert!(
+            def.contains(&format!(r#"return_kind: "{kind}", return_object: "{object}""#)),
+            "`{ty}` declares its ok type: {def}"
+        );
+    }
+}
+
+/// The failure itself needs no encoding: `invoke` returns the same
+/// `Result<string, string>`, so `?` carries the message straight back to the
+/// engine, which prints it the way `dagger::fail` does.
+#[test]
+fn a_fallible_return_is_passed_through_with_a_question_mark() {
+    for (ty, encoded) in [
+        ("Result<string, string>", "::dagger::encode_string(&(Build.attempt())?)"),
+        ("Result<int, string>", "::dagger::encode_int((Build.attempt())?)"),
+        ("Result<bool, string>", "::dagger::encode_bool((Build.attempt())?)"),
+        ("Result<(), string>", "{ (Build.attempt())?; ::dagger::encode_void() }"),
+        // Two `?`s, and they are different failures: the inner one is the
+        // function's own, the outer is resolving the object it returned.
+        ("Result<Container, string>", "::dagger::encode_object(&(Build.attempt())?)?"),
+        // A goish `error` is a value, not a message, so it is read through the
+        // helper — `Error()` inline would panic on the nil one.
+        (
+            "Result<string, error>",
+            "::dagger::encode_string(&(Build.attempt()).map_err(::dagger::error_message)?)",
+        ),
+        (
+            "Result<(), goish::error>",
+            "{ (Build.attempt()).map_err(::dagger::error_message)?; ::dagger::encode_void() }",
+        ),
+    ] {
+        let f = function("attempt", Vec::new(), ty);
+        let arm = dispatch_arm("Build", &f).unwrap_or_else(|e| panic!("{ty}: {e}"));
+        assert!(arm.contains(encoded), "`{ty}` dispatches as `{encoded}`: {arm}");
+    }
+}
+
+/// An error of any other type has nowhere to go — goish has no `Display`, and
+/// its `error` is the interface a type carrying a message implements — so it is
+/// refused by name rather than as a `From` error inside the macro's own output.
+#[test]
+fn a_non_string_error_is_refused() {
+    for ty in ["Result<string, MyError>", "Result<string, ()>", "Result<string>"] {
+        let f = function("attempt", Vec::new(), ty);
+        let message = function_def(&f).expect_err("a non-string error is refused");
+        assert!(
+            message.contains("`Result<string, string>`"),
+            "names what to write instead: {message}"
+        );
+    }
+}
+
+/// The rules a return is held to are the ok type's, fallible or not.
+#[test]
+fn a_fallible_optional_return_is_refused_too() {
+    let f = function("maybe", Vec::new(), "Result<Option<string>, string>");
+    let message = dispatch_arm("Build", &f).expect_err("an optional return is refused");
+    assert!(
+        message.contains("optional return is not supported") && message.contains("return `string`"),
+        "says why, and what to return instead: {message}"
+    );
+}
+
 /// The API spelling of a name is camelCase, whatever the Rust one is.
 #[test]
 fn names_are_camel_cased_for_the_api() {

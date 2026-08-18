@@ -66,6 +66,10 @@ type VerbChecks {
       "checked-with-default",
       "a check whose only argument has a default should still be runnable",
     )
+    listed.assertStdoutContains(
+      "try-check",
+      "a check returning Result<(), string> should appear in the check tree",
+    )
 
     target.runInModule(["check"]).assertSuccess
   }

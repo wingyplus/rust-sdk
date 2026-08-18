@@ -40,7 +40,7 @@
 
 use dagger::gen::{self, dag};
 use dagger::ObjectId;
-use goish::{fmt, int, slice, string, strings};
+use goish::{errors, fmt, int, slice, string, strings};
 
 /// A module exercising the whole Rust SDK surface.
 pub struct FeatureMatrix;
@@ -104,6 +104,90 @@ impl FeatureMatrix {
     #[dagger::function]
     pub fn boom(&self) -> string {
         dagger::fail(string("intentional failure"))
+    }
+
+    /// Return what a container printed, fallibly.
+    ///
+    /// A `Result` return is what lets `?` carry a client failure out of the
+    /// function: every generated method is fallible, since reaching the engine
+    /// is a round trip, and the alternative is
+    /// `unwrap_or_else(|m| dagger::fail(m))` at each call — which is what every
+    /// other client function in this fixture writes.
+    #[dagger::function]
+    pub fn try_leaf(&self) -> Result<string, string> {
+        dag()
+            .container()
+            .from("alpine:3.22")
+            .with_exec(&["echo", "-n", "try-leaf"])
+            .stdout()
+    }
+
+    /// Fail by returning `Err`.
+    ///
+    /// The other end of `boom` above: the same non-zero exit and the same
+    /// message on stderr, reached by returning rather than by diverging.
+    #[dagger::function]
+    pub fn try_boom(&self) -> Result<string, string> {
+        Err(string("intentional Err"))
+    }
+
+    /// Fail with a goish `error` rather than with a message.
+    ///
+    /// The other error a fallible function may carry. goish's own APIs hand
+    /// back an `error`, so a function whose work is goish's rather than the
+    /// client's fails that way too, and the dispatch reads the message off it.
+    /// A client failure crosses into that shape with `map_err(errors::New)`,
+    /// which is the line below.
+    #[dagger::function]
+    pub fn try_error(
+        &self,
+        #[dagger(default = false)] boom: bool,
+    ) -> Result<string, errors::error> {
+        let out = dag()
+            .container()
+            .from("alpine:3.22")
+            .with_exec(&["echo", "-n", "try-error"])
+            .stdout()
+            .map_err(errors::New)?;
+
+        if boom {
+            return Err(errors::New("intentional goish error"));
+        }
+        Ok(out)
+    }
+
+    /// Return an object, fallibly.
+    ///
+    /// Two failures meet in one signature: the `?` on the id round trip the
+    /// function itself makes, and the one the dispatch adds to resolve the
+    /// Container it hands back.
+    #[dagger::function]
+    pub fn try_container_out(&self) -> Result<gen::Container, string> {
+        let id = dag().directory().with_new_file("hello.txt", "try-object").to_id()?;
+
+        Ok(dag()
+            .container()
+            .from("alpine:3.22")
+            .with_mounted_directory("/mnt", id)
+            .with_exec(&["cat", "/mnt/hello.txt"]))
+    }
+
+    /// A check that passes by returning `Ok`.
+    ///
+    /// The Void half of a fallible return, and the shape a real check wants:
+    /// the work is fallible, and what it decides is the `Err`.
+    #[dagger::check]
+    pub fn try_check(&self) -> Result<(), string> {
+        let out = dag()
+            .container()
+            .from("alpine:3.22")
+            .with_exec(&["echo", "-n", "ok"])
+            .stdout()?;
+
+        if out != "ok" {
+            return Err(string("expected ok, got ") + out);
+        }
+        Ok(())
     }
 
     /// Return nothing.

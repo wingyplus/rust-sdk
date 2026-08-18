@@ -73,6 +73,68 @@ type DeclarationChecks {
   }
 
   """
+  A function returning `Result<T, string>` should hand back the value it
+  produced, and its `Err` should fail the call.
+
+  Both halves are the point of a fallible signature. `tryLeaf` shows that the
+  engine was told what the function *produces* — the `Result` is peeled off
+  before the return kind is declared, so a `Result<string, string>` is a String
+  function like any other, and a caller sees no trace of it. `tryBoom` shows the
+  other end reaching the same place `dagger::fail` does: `invoke` returns the
+  same `Result`, so an `Err` needs no encoder, just the `?` the dispatch adds.
+
+  `failuresPropagate` above is the same assertion against a function that
+  diverges instead. The two are worth having side by side: the message a caller
+  reads is the one thing that must not depend on which way the module chose to
+  fail.
+  """
+  pub fallibleFunctionsReturnOrFail(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+
+    harness.modTarget(ws).assertJsonString(
+      ["try-leaf"],
+      "try-leaf",
+      "a Result return should hand back the value inside its Ok",
+    )
+    harness.modTarget(ws).assertFailure(["try-boom"], "an Err should exit non-zero")
+
+    target
+      .run(["api", "call", "-m", "/work/" + target.modulePath, "try-boom"])
+      .assertStderrContains(
+        "dagger: intentional Err",
+        "the message an Err carried should reach the caller's stderr",
+      )
+  }
+
+  """
+  A function may fail with goish's `error` as well as with a message.
+
+  The two are not interchangeable and both have to work: a client method fails
+  with the message itself, and goish's own APIs fail with an `error`, so which
+  one a function returns follows from whose work it is doing. The dispatch reads
+  the message off an `error` through `dagger::error_message` rather than through
+  `Error()`, which panics on the nil error — a module that returned `Err(nil)`
+  gets a vague failure rather than a panic, and either way the caller reads one
+  message on stderr.
+  """
+  pub fallibleFunctionsMayCarryAGoishError(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+
+    harness.modTarget(ws).assertJsonString(
+      ["try-error"],
+      "try-error",
+      "a Result<T, error> should hand back the value inside its Ok",
+    )
+
+    target
+      .run(["api", "call", "-m", "/work/" + target.modulePath, "try-error", "--boom=true"])
+      .assertStderrContains(
+        "dagger: intentional goish error",
+        "the message a goish error carried should reach the caller's stderr",
+      )
+  }
+
+  """
   A function that returns nothing should be callable, in both spellings.
 
   Void is reached elsewhere in this suite only through `#[dagger::check]`, which

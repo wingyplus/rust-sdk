@@ -138,15 +138,15 @@ use dagger::ObjectId;
 
 /// Write a generated file into the workspace.
 #[dagger::function(generate)]
-pub fn generate(&self, ws: gen::Workspace) -> gen::Changeset {
+pub fn generate(&self, ws: gen::Workspace) -> Result<gen::Changeset, string> {
     // The workspace's current files: the "before" of the changeset.
     let before = ws.directory("/");
-    let before_id = before.to_id().unwrap_or_else(|m| dagger::fail(m));
+    let before_id = before.to_id()?;
 
     // Write a file into it, and diff the result back against the before.
-    before
+    Ok(before
         .with_new_file("generated.txt", "hello")
-        .changes(before_id)
+        .changes(before_id))
 }
 ```
 
@@ -154,7 +154,8 @@ The engine calls a generator with nothing, so it holds it to a shape, and the
 macro enforces the same rules at compile time rather than letting the module
 fail to load:
 
-- it returns `Changeset` — the changes to apply;
+- it returns `Changeset` — the changes to apply, directly or as
+  `Result<Changeset, string>`;
 - every argument is one the engine can leave out: an `Option<T>`, one with a
   `default`, or a `Workspace`, which the engine injects itself.
 
@@ -205,6 +206,48 @@ misspelling is a compile error about that trait.
 
 Lists are not supported in either direction, and neither is an optional return.
 Both are compile errors naming what is unsupported.
+
+### Failing
+
+A function returns its value directly, or as `Result<T, string>`:
+
+```rust
+/// What the container printed.
+#[dagger::function]
+pub fn out(&self) -> Result<string, string> {
+    dag().container().from("alpine:3.21").with_exec(&["echo", "hi"]).stdout()
+}
+```
+
+Every client method is fallible — reaching the engine is a round trip — so a
+`Result` return is what lets `?` carry a failure out of the function instead of
+`unwrap_or_else(|m| dagger::fail(m))` at each call. An `Err` ends the call
+exactly as [`dagger::fail`](#checks) does: the message on stderr, a non-zero
+exit.
+
+The engine is told what the function *produces*, so `Result<T, string>` and `T`
+declare the same thing — a caller sees no trace of the difference.
+
+The error is goish's `string` or its `error`, whichever the work at hand fails
+with. The client fails with the message itself; goish's own APIs fail with an
+`error`, so a function doing that kind of work says so:
+
+```rust
+/// The first line of a file the module carries.
+#[dagger::function]
+pub fn first_line(&self, path: string) -> Result<string, errors::error> {
+    let (data, err) = os::ReadFile(path);
+    if err != nil {
+        return Err(err);
+    }
+    Ok(strings::SplitN(string(data), "\n", 2)[0].clone())
+}
+```
+
+The two cross with `map_err(errors::New)` one way and `dagger::error_message`
+the other — which is what the dispatch calls, rather than `Error()`, because
+that method panics on the nil error. Any other error type is a compile error
+naming it: goish has no `Display` to read a message off one with.
 
 ### Checks
 
@@ -362,16 +405,21 @@ What works today:
   ```rust
   /// Grep a directory for a pattern.
   #[dagger::function]
-  pub fn grep_dir(&self, directory_arg: Directory, #[dagger(default = "hello")] pattern: string) -> string {
-      let source = directory_arg.to_id().unwrap_or_else(|m| dagger::fail(m));
+  pub fn grep_dir(&self, directory_arg: Directory, #[dagger(default = "hello")] pattern: string) -> Result<string, string> {
+      let source = directory_arg.to_id()?;
       dag().container().from("alpine:latest")
           .with_mounted_directory("/mnt", source)
           .with_workdir("/mnt")
           .with_exec(&["grep", "-R", pattern.as_ref(), "."])
           .stdout()
-          .unwrap_or_else(|m| dagger::fail(m))
   }
   ```
+
+- Fallible functions. A function returns its value directly or as
+  `Result<T, string>`, as above — or as `Result<T, error>`, goish's own error
+  type. The engine is told what the function produces either way, and an `Err`
+  reaches the caller as the message `dagger::fail` would have written. That is
+  what makes `?` usable against a client whose every method is fallible.
 
 What is stubbed:
 

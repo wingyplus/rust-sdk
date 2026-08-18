@@ -65,6 +65,44 @@ use proc_macro::{Delimiter, TokenStream, TokenTree};
 /// name is camelCased for the API — `container_echo` is called as
 /// `container-echo` on the command line.
 ///
+/// # Failing
+///
+/// A function returns its value directly, or as `Result<T, string>`:
+///
+/// ```ignore
+/// /// What the container printed.
+/// #[dagger::function]
+/// pub fn out(&self) -> Result<string, string> {
+///     dag().container().from("alpine:3.22").with_exec(&["echo", "hi"]).stdout()
+/// }
+/// ```
+///
+/// Every client method is fallible — reaching the engine is a round trip — so
+/// this is what lets `?` carry a failure out of the function rather than
+/// `unwrap_or_else(|m| dagger::fail(m))` at each call. An `Err` ends the call
+/// exactly as [`dagger::fail`] does: the message on stderr, a non-zero exit.
+///
+/// The engine is told what the function *produces* either way — failure is not
+/// a kind it has — so `Result<T, string>` and `T` declare the same thing.
+///
+/// The error is goish's `string` or its `error`, whichever the work at hand
+/// fails with: the client fails with the message itself, goish's own APIs fail
+/// with an `error`, and the two cross with `map_err(errors::New)` one way and
+/// [`dagger::error_message`] the other. Any other error type is a compile error
+/// naming it — there is no `Display` in goish to read a message off one with.
+///
+/// ```ignore
+/// /// The first line of a file the module carries.
+/// #[dagger::function]
+/// pub fn first_line(&self, path: string) -> Result<string, errors::error> {
+///     let (data, err) = os::ReadFile(path);
+///     if err != nil {
+///         return Err(err);
+///     }
+///     Ok(strings::SplitN(string(data), "\n", 2)[0].clone())
+/// }
+/// ```
+///
 /// # Options
 ///
 /// What a function *is* goes in the attribute itself — the one slot Go writes
@@ -92,6 +130,9 @@ use proc_macro::{Delimiter, TokenStream, TokenTree};
 /// path resolves and an IDE sees an ordinary function. [`macro@object`] on the
 /// surrounding `impl` block is what reads it, and what strips it before `rustc`
 /// gets there.
+///
+/// [`dagger::fail`]: ../dagger/fn.fail.html
+/// [`dagger::error_message`]: ../dagger/fn.error_message.html
 #[proc_macro_attribute]
 pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
@@ -124,7 +165,8 @@ pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// A check is also an ordinary function — it is still callable as
 /// `dagger call lint` — so this attribute implies [`macro@function`] and the two
 /// need not both be written. It fails the same way any other function does: by
-/// exiting non-zero, which [`dagger::fail`] does with a message on stderr.
+/// exiting non-zero, which [`dagger::fail`] does with a message on stderr, and
+/// which returning `Err` from a `-> Result<(), string>` check does for it.
 ///
 /// # No required arguments
 ///
@@ -477,6 +519,87 @@ fn last_segment(ty: &str) -> &str {
     ty.rsplit("::").next().unwrap_or(ty).trim()
 }
 
+/// Split `Result<T, E>` into the two types it names.
+///
+/// The path in front may be spelled any way that resolves — `Result`,
+/// `core::result::Result` — so it is the last segment before the `<` that has to
+/// say `Result`. The split is on the first comma at depth zero, so an ok type
+/// that is itself generic (`Result<Option<string>, string>`) survives it.
+///
+/// `None` when the type is not a `Result` at all, which is the ordinary,
+/// infallible case.
+fn split_result(ty: &str) -> Option<(&str, &str)> {
+    let inner = ty.trim().strip_suffix('>')?;
+    let open = inner.find('<')?;
+    if last_segment(&inner[..open]) != "Result" {
+        return None;
+    }
+    let inner = &inner[open + 1..];
+
+    let mut depth = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            // `Result<T>` with no error type never reaches here; the caller
+            // reports the whole type rather than half of it.
+            ',' if depth == 0 => return Some((inner[..i].trim(), inner[i + 1..].trim())),
+            _ => {}
+        }
+    }
+    Some((inner.trim(), ""))
+}
+
+/// How a function fails, if it can.
+///
+/// Both fallible shapes end at the same place — the message [`Object::invoke`]
+/// hands back and the engine prints — so what this picks is how the error
+/// spells that message.
+///
+/// [`Object::invoke`]: ../dagger/trait.Object.html#tymethod.invoke
+enum Failure {
+    /// Infallible: the function returns its value directly.
+    None,
+    /// `Result<T, string>`: the error already is the message. This is what
+    /// every client method fails with, so it is what `?` propagates.
+    Message,
+    /// `Result<T, goish::error>`: goish's own APIs fail with this, and the
+    /// message is `Error()` — through a helper, since that method panics on a
+    /// nil error.
+    GoError,
+}
+
+/// What a function returns, with the `Result` — if it wrote one — peeled off.
+///
+/// A function may return its value directly or fallibly, and everything that
+/// looks at a return type wants the value either way: the engine is told what
+/// the function *produces*, and a failure is not a kind it has. The [`Failure`]
+/// is what the dispatch needs on top of that — how to turn what the call may
+/// return into the message it hands back.
+///
+/// The error is goish's `string` or its `error`, and nothing else: there is no
+/// way to get a message out of an arbitrary type — goish has no `Display`, and
+/// its `error` is the interface everything that carries a message implements.
+/// So anything else is refused here, rather than as a `From` error inside the
+/// macro's own output.
+fn return_type(f: &Function) -> Result<(&str, Failure), String> {
+    let declared = f.return_ty.trim();
+    let (ok, err) = match split_result(declared) {
+        Some(split) => split,
+        None => return Ok((declared, Failure::None)),
+    };
+    match last_segment(err) {
+        "string" => Ok((ok, Failure::Message)),
+        "error" => Ok((ok, Failure::GoError)),
+        _ => Err(format!(
+            "`{}` returns `{}`; a fallible function fails with the message the engine shows, so its error is goish's `string` or its `error` — write `Result<{}, string>`",
+            f.name,
+            declared,
+            if ok.is_empty() { "T" } else { ok },
+        )),
+    }
+}
+
 /// Whether a type names an engine object.
 ///
 /// There is nothing to look the name up in — the schema belongs to the engine
@@ -677,10 +800,14 @@ fn function_def(f: &Function) -> Result<String, String> {
         ));
     }
 
-    let ret = kind_of(&f.return_ty)?;
+    // The engine is told what the function produces, so a fallible one is
+    // declared by the type inside its `Result`: failure is not a kind.
+    let (returns, _failure) = return_type(f)?;
+    let ret = kind_of(returns)?;
 
     // The other half of the generator contract: `dagger generate` applies what
-    // the function returns, so a generator returns the changes it made.
+    // the function returns, so a generator returns the changes it made —
+    // directly, or as `Result<Changeset, string>`.
     if function_options.generate && (ret.object != "Changeset" || ret.optional) {
         return Err(format!(
             "`{}` is a generate function, so it must return `Changeset`, but it returns `{}`",
@@ -744,7 +871,8 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
     // A unit struct is its own value, so `MyModule.method(..)` is how a `&self`
     // method is reached without the engine having constructed anything.
     let call = format!("{receiver}{fname}({args})", fname = f.name, args = call_args.join(", "));
-    let ret = kind_of(&f.return_ty)?;
+    let (returns, failure) = return_type(f)?;
+    let ret = kind_of(returns)?;
 
     // A returned `Option<T>` would have to be declared optional to the engine,
     // which `FunctionDef` has no room for yet, and every encoder below takes the
@@ -755,9 +883,20 @@ fn dispatch_arm(type_name: &str, f: &Function) -> Result<String, String> {
             "`{}` returns `{}`; an optional return is not supported yet, so return `{}` and fail with `dagger::fail` instead",
             f.name,
             f.return_ty,
-            unwrap_option(&f.return_ty).unwrap_or("T")
+            unwrap_option(returns).unwrap_or("T")
         ));
     }
+
+    // `invoke` returns `Result<string, string>`, so a function that failed with
+    // a message needs nothing but `?` on the way past, and one that failed with
+    // a goish `error` needs its message read off it first. The parentheses are
+    // what make either safe to interpolate: `?` binds tighter than the `&` an
+    // encoder takes, so `&(call)?` borrows the value rather than the `Result`.
+    let call = match failure {
+        Failure::None => call,
+        Failure::Message => format!("({call})?"),
+        Failure::GoError => format!("({call}).map_err(::dagger::error_message)?"),
+    };
 
     let encode = match ret.kind {
         "VOID_KIND" => format!("{{ {call}; ::dagger::encode_void() }}"),

@@ -41,6 +41,12 @@
 //! the way out. So the signature a module declares is not limited to scalars
 //! any more.
 //!
+//! A function may fail, too: returning `Result<T, string>` — or
+//! `Result<T, error>`, goish's own error type — declares to the engine exactly
+//! what returning `T` declares, and an `Err` reaches the caller as the message
+//! [`fail`] would have written. That is what lets `?` carry a client failure out
+//! of a function, every generated method being fallible.
+//!
 //! What is still missing is the way back *in*: an argument of a client method
 //! that the schema types as `DirectoryID` is a `string` here, so handing an
 //! object to one goes through [`ObjectId::to_id`] rather than passing the
@@ -80,8 +86,8 @@ pub use engine::{
     SESSION_TOKEN_ENV,
 };
 pub use module::{
-    encode_bool, encode_int, encode_object, encode_string, encode_void, serve, ArgDef, Arguments,
-    FunctionDef, Object,
+    encode_bool, encode_int, encode_object, encode_string, encode_void, error_message, serve,
+    ArgDef, Arguments, FunctionDef, Object,
 };
 pub use objects::{Changeset, ObjectId, Workspace};
 pub use querybuilder::{

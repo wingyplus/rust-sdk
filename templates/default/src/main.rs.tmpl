@@ -34,6 +34,12 @@ impl {{ .ModuleType }} {
     // Once it has run, an argument can be the object itself:
     //
     //     pub fn grep_dir(&self, directory_arg: dagger::gen::Directory, …)
+    //
+    // Reaching the engine is a round trip, so every client method is fallible.
+    // A function that calls one usually returns `Result<T, string>` — or
+    // `Result<T, goish::error>` — and lets `?` carry the failure out; the engine
+    // is told what it produces either way, and an `Err` becomes the message the
+    // caller sees.
     /// Returns the pattern and directory it would grep.
     #[dagger::function]
     pub fn grep_dir(

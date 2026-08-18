@@ -256,6 +256,25 @@ pub fn encode_object<T: crate::ObjectId>(value: &T) -> Result<string, string> {
     Ok(crate::json_string(&value.to_id()?))
 }
 
+/// The message a goish [`error`](goish::error) carries, for a function that
+/// returned one.
+///
+/// A function may fail with a `string` — the message itself, which is what
+/// every client method fails with — or with goish's `error`, which is what
+/// goish's own APIs hand back. Both end as the one thing the engine prints, and
+/// this is where the second becomes the first.
+///
+/// It is a function rather than `err.Error()` inline in the dispatch because
+/// that method panics on a nil error, the way calling a method on a nil
+/// receiver does in Go. A module that returned `Err(nil)` did mean to fail, so
+/// a vague message serves its caller better than a panic in the dispatch does.
+pub fn error_message(err: goish::error) -> string {
+    if err == nil {
+        return string("the function failed, but its error was nil");
+    }
+    err.Error()
+}
+
 /// The `Void` scalar: a field that returns nothing.
 ///
 /// It arrives as JSON null, so decoding accepts whatever it is handed — the
