@@ -2,7 +2,13 @@
 name = "dagger-macros"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.86"
+# Above goish's 1.86 floor, which every other crate here declares, and it has to
+# be: source maps are read off `proc_macro::Span::file()`, `line()` and
+# `column()`, stable since 1.88.0. This crate is built for the host, so it is
+# the one place the floor can differ from goish's — and the runtime image is
+# pinned at 1.90 (`rustImage` in mod.dang and runtime/main.dang), which is what
+# actually has to satisfy it.
+rust-version = "1.88"
 license = "Apache-2.0"
 description = "Attribute macros that declare a Dagger module's objects and functions."
 repository = "https://github.com/wingyplus/rust-sdk"

@@ -34,12 +34,65 @@ impl Attr {
     }
 }
 
+/// Where a declaration was written, read off the span of the token that names
+/// it.
+///
+/// The name's own token rather than the keyword in front of it: what a source
+/// map is for is jumping to a declaration, and `pub fn build` puts the name
+/// three tokens past the start of the item. `file` is what
+/// `proc_macro::Span::file()` reports — relative to the crate root, so
+/// `src/main.rs` for a module's own source — and both numbers are one-indexed.
+///
+/// [`unknown`](SourceLoc::unknown) is what a hand-built [`Function`] carries in
+/// the crate's own tests: `Span` cannot be touched outside a macro expansion,
+/// so there is nothing to read there.
+pub struct SourceLoc {
+    pub file: String,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl SourceLoc {
+    /// No location: emitted as `SourceMapDef::UNKNOWN`, and registered as no
+    /// source map at all.
+    pub fn unknown() -> SourceLoc {
+        SourceLoc {
+            file: String::new(),
+            line: 0,
+            column: 0,
+        }
+    }
+
+    /// The location a token was written at.
+    pub fn of(tree: &TokenTree) -> SourceLoc {
+        let span = tree.span();
+        SourceLoc {
+            file: span.file(),
+            line: span.line(),
+            column: span.column(),
+        }
+    }
+}
+
 /// A parameter of a function: its name, its type tokens, and its `#[dagger(...)]`.
 pub struct Param {
     pub name: String,
     /// The type, rendered back to source text.
     pub ty: String,
     pub attrs: Vec<Attr>,
+    /// Where the parameter's name was written.
+    pub source: SourceLoc,
+}
+
+/// The `impl` block `#[dagger::object]` was applied to.
+pub struct ImplBlock {
+    /// The type the block implements, by its last path segment.
+    pub type_name: String,
+    /// Joined `///` lines on the block itself.
+    pub doc: String,
+    /// Where the type name was written.
+    pub source: SourceLoc,
+    pub functions: Vec<Function>,
 }
 
 /// A function we were asked to export.
@@ -47,6 +100,8 @@ pub struct Function {
     pub name: String,
     /// Joined `///` lines.
     pub doc: String,
+    /// Where the function's name was written.
+    pub source: SourceLoc,
     pub params: Vec<Param>,
     /// The return type as source text, empty when the function returns nothing.
     pub return_ty: String,
@@ -194,16 +249,33 @@ pub fn render(tokens: &[TokenTree]) -> String {
         .to_string()
 }
 
+/// Join the `///` lines of an attribute list into one description.
+fn join_docs(attrs: &[Attr]) -> String {
+    attrs
+        .iter()
+        .filter_map(|a| a.doc_value())
+        .map(|line| line.trim().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Parse the body of an `impl` block into the functions carrying any of
 /// `markers`, recording which ones each carried.
 ///
-/// Returns the impl's type name alongside them.
-pub fn parse_impl(item: TokenStream, markers: &[&str]) -> Result<(String, Vec<Function>), String> {
+/// Returns the impl's own metadata alongside them: its type name, its `///`
+/// doc comment and where the type name was written. The doc comment is the
+/// block's, not the type's — a `struct` declaration is a separate item and this
+/// macro never sees it — and it survives being written in front of
+/// `#[dagger::object]`, since an inert `#[doc = "..."]` stays on the item the
+/// attribute macro is handed.
+pub fn parse_impl(item: TokenStream, markers: &[&str]) -> Result<ImplBlock, String> {
     let tokens: Vec<TokenTree> = item.into_iter().collect();
     let mut cursor = 0;
 
-    // Skip any attributes on the impl block itself.
-    let _ = take_attrs(&tokens, &mut cursor);
+    // The attributes on the impl block itself: its doc comment is the object's
+    // description, and the module's.
+    let attrs = take_attrs(&tokens, &mut cursor);
+    let doc = join_docs(&attrs);
 
     match tokens.get(cursor) {
         Some(TokenTree::Ident(id)) if id.to_string() == "impl" => cursor += 1,
@@ -211,10 +283,12 @@ pub fn parse_impl(item: TokenStream, markers: &[&str]) -> Result<(String, Vec<Fu
     }
 
     let mut type_name = String::new();
+    let mut source = SourceLoc::unknown();
     while let Some(tree) = tokens.get(cursor) {
         match tree {
             TokenTree::Ident(id) => {
                 type_name = id.to_string();
+                source = SourceLoc::of(tree);
                 cursor += 1;
             }
             TokenTree::Group(g) if g.delimiter() == Delimiter::Brace => break,
@@ -230,7 +304,12 @@ pub fn parse_impl(item: TokenStream, markers: &[&str]) -> Result<(String, Vec<Fu
         _ => return Err("`impl` block has no body".to_string()),
     };
 
-    Ok((type_name, parse_items(body, markers)?))
+    Ok(ImplBlock {
+        type_name,
+        doc,
+        source,
+        functions: parse_items(body, markers)?,
+    })
 }
 
 /// Whether an attribute names a marker, as `#[marker]` or `#[path::marker]`.
@@ -270,8 +349,8 @@ fn parse_items(body: TokenStream, markers: &[&str]) -> Result<Vec<Function>, Str
         }
         cursor += 1;
 
-        let name = match tokens.get(cursor) {
-            Some(TokenTree::Ident(id)) => id.to_string(),
+        let (name, source) = match tokens.get(cursor) {
+            Some(tree @ TokenTree::Ident(id)) => (id.to_string(), SourceLoc::of(tree)),
             _ => return Err("expected a name after `fn`".to_string()),
         };
         cursor += 1;
@@ -318,12 +397,7 @@ fn parse_items(body: TokenStream, markers: &[&str]) -> Result<Vec<Function>, Str
             continue;
         }
 
-        let doc = attrs
-            .iter()
-            .filter_map(|a| a.doc_value())
-            .map(|line| line.trim().to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let doc = join_docs(&attrs);
 
         let (params, takes_self) = parse_params(params_group.stream())?;
 
@@ -336,6 +410,7 @@ fn parse_items(body: TokenStream, markers: &[&str]) -> Result<Vec<Function>, Str
         functions.push(Function {
             name,
             doc,
+            source,
             params,
             return_ty,
             takes_self,
@@ -387,7 +462,13 @@ fn parse_params(stream: TokenStream) -> Result<(Vec<Param>, bool), String> {
         if name.is_empty() || ty.is_empty() {
             return Err(format!("could not read parameter `{}`", render(rest)));
         }
-        params.push(Param { name, ty, attrs });
+        let source = rest.first().map(SourceLoc::of).unwrap_or_else(SourceLoc::unknown);
+        params.push(Param {
+            name,
+            ty,
+            attrs,
+            source,
+        });
     }
 
     Ok((params, takes_self))

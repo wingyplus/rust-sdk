@@ -197,4 +197,71 @@ type DeclarationChecks {
         "the deprecated option should reach the schema as the argument's deprecationReason",
       )
   }
+
+  """
+  The `///` comment on the annotated `impl` block should become the object's
+  description, and `#[dagger::function(deprecated = ...)]` the function's
+  deprecation.
+
+  Both are declaration metadata with no behavioural shadow, so they are read
+  back out of the schema the module serves, the way `argumentMetadataIsDeclared`
+  reads an argument's. The object's description is the one place a Rust module
+  can say what it *is*: the macro is handed the `impl` block and nothing else,
+  so a doc comment on the `struct` — or the crate's `//!` — never reaches it.
+  The fixture's block comment is worded so that finding it proves the macro read
+  the block rather than the struct.
+
+  `includeDeprecated: true` is as load-bearing here as it is for an argument,
+  and for the same reason: a deprecated field is hidden from introspection by
+  default, so leaving it off looks exactly like a macro that dropped the
+  function.
+  """
+  pub declarationMetadataIsDeclared(ws: Workspace!): Void @check {
+    let target = harness.target(ws)
+
+    target
+      .query("{__type(name:\"FeatureMatrix\"){description}}")
+      .assertStdoutContains(
+        "Every Rust SDK feature the end-to-end suite asserts on.",
+        "the impl block's doc comment should become the object's description",
+      )
+
+    target
+      .query(
+        "{__type(name:\"FeatureMatrix\"){fields(includeDeprecated:true){name deprecationReason}}}",
+      )
+      .assertStdoutContains(
+        "use echo instead",
+        "#[dagger::function(deprecated = ...)] should reach the schema as the field's deprecationReason",
+      )
+  }
+
+  """
+  Every declaration should carry the file and line it was written at.
+
+  The engine hangs a `@sourceMap` directive off a field it was given one for,
+  so an error about a function can point at the source instead of at a name.
+  What the macro reads is `proc_macro::Span`, whose `file()` is relative to the
+  crate root — `src/main.rs` for a module's own source, which is what the engine
+  wants — and whose `line()` and `column()` are one-indexed like the engine's.
+
+  The line number itself is not asserted: it moves whenever the fixture is
+  edited, and a check that has to be updated with every unrelated edit is a
+  check that gets updated without being read. The filename reaching the
+  directive at all is what fails when the macro stops attaching source maps.
+  """
+  pub declarationsCarrySourceMaps(ws: Workspace!): Void @check {
+    let declared = harness.target(ws).query(
+      "{__type(name:\"FeatureMatrix\"){fields{name directives{name args{name value}}}}}",
+    )
+
+    declared.assertStdoutContains(
+      "sourceMap",
+      "a function should be registered with a source map",
+    )
+    declared.assertStdoutContains(
+      "src/main.rs",
+      "the source map should name the file the function was written in",
+    )
+  }
 }

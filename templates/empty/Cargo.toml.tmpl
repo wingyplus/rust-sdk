@@ -2,8 +2,10 @@
 name = "{{ .ModuleCrate }}"
 version = "0.1.0"
 edition = "2021"
-# goish's floor, and the version the module runtime builds with.
-rust-version = "1.86"
+# The vendored `dagger` crate's floor — above goish's 1.86, because its macros
+# read source maps off `proc_macro::Span` — and below the version the module
+# runtime builds with.
+rust-version = "1.88"
 publish = false
 
 # The runtime starts the binary cargo emits here, and finds it by this name.

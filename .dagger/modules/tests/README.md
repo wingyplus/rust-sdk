@@ -19,7 +19,7 @@ What is here is what only a Rust module can show:
 
 | group | covers | why nothing else reaches it |
 | --- | --- | --- |
-| `declaration` | `default`, `doc`, `deprecated`, `Option<T>`, Void returns, fallible returns in both error types, failure propagation and the message that comes with it | `sdk/macros` is a proc-macro crate; the `proc_macro` API panics outside a macro expansion, so its own tests build `Function` values by hand and never parse a signature |
+| `declaration` | `default`, `doc`, `deprecated` on an argument and on a function, the `impl` block's own doc comment, source maps, `Option<T>`, Void returns, fallible returns in both error types, failure propagation and the message that comes with it | `sdk/macros` is a proc-macro crate; the `proc_macro` API panics outside a macro expansion, so its own tests build `Function` values by hand and never parse a signature |
 | `objects` | `Directory` in, `Container` out, `default_path`, `ignore` | an object crosses the boundary as an engine ID, and nothing until now called `ObjectId::from_id`/`to_id` against a real engine |
 | `client` | leaves, scalar lists, **object lists**, enums, opts structs, `fetch`, nested `select`, chaining | `sdk/codegen`'s suite asserts on emitted *text* against a miniature schema |
 | `verbs` | `dagger check` and `dagger generate` discovering a Rust module | — |
@@ -107,7 +107,12 @@ and use a normal `cargo build` loop.
 - **GraphQL hides deprecated things from introspection.** Asking a module's type
   for a deprecated argument without `args(includeDeprecated: true)` returns the
   function with *no arguments at all*, which reads exactly like a macro that
-  dropped it.
+  dropped it. The same holds one level up: a deprecated *function* is missing
+  from `fields` unless `fields(includeDeprecated: true)` asks for it.
+- **An object's description comes off the `impl` block, not the struct.**
+  `#[dagger::object]` is handed the block and nothing else, so the fixture's
+  block carries a doc comment worded differently from the struct's — a check
+  that finds it has found the right one.
 - **A `pub` function may not return a dependency's type.** The engine refuses
   the module with "cannot return external type from dependency module", so the
   `mod-test` target is reached through a `let`.

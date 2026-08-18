@@ -29,8 +29,16 @@
 //! [`macro@check`] marks a function `dagger check` should run, the Go SDK's
 //! `+check` pragma.
 //!
-//! What a function *is* otherwise goes in the marker attribute — `#[dagger::function(generate)]`
-//! declares a generator, the way Go writes `+generate` in the doc comment.
+//! What a function *is* otherwise goes in the marker attribute —
+//! `#[dagger::function(generate)]` declares a generator and
+//! `#[dagger::function(deprecated = "...")]` a deprecation, the way Go writes
+//! `+generate` and `+deprecated` in the doc comment.
+//!
+//! Descriptions come from `///` comments: a method's is the function's, and the
+//! one on the annotated `impl` block is the object's — and the module's, since
+//! the crate's `//!` doc is not something an attribute macro on an `impl` can
+//! see. Every declaration also carries the file and line it was written at, read
+//! off its `proc_macro::Span`, so an engine-side error can point at the source.
 
 extern crate proc_macro;
 
@@ -38,7 +46,7 @@ mod parse;
 #[cfg(test)]
 mod tests;
 
-use parse::{quote_str, render, split_commas, unquote, Attr, Function};
+use parse::{quote_str, render, split_commas, unquote, Attr, Function, SourceLoc};
 use proc_macro::{Delimiter, TokenStream, TokenTree};
 
 /// Mark a method as part of the module's API.
@@ -111,6 +119,7 @@ use proc_macro::{Delimiter, TokenStream, TokenTree};
 /// | Option | Effect | Go SDK equivalent |
 /// | --- | --- | --- |
 /// | `generate` | The function is a generator: `dagger generate` runs it and applies the `Changeset` it returns | `+generate` |
+/// | `deprecated = "..."` | Marks the function deprecated, with a migration note | `+deprecated` |
 ///
 /// ```ignore
 /// /// Regenerate the checked-in fixtures.
@@ -118,6 +127,16 @@ use proc_macro::{Delimiter, TokenStream, TokenTree};
 /// pub fn generate(&self, ws: Workspace) -> Changeset {
 ///     …
 /// }
+/// ```
+///
+/// `deprecated` is the same option a parameter carries in
+/// `#[dagger(deprecated = "...")]`, one level up. It goes in the marker
+/// attribute because a method has no `#[dagger(...)]` of its own:
+///
+/// ```ignore
+/// /// Build the project. Superseded by `build`.
+/// #[dagger::function(deprecated = "use build instead")]
+/// pub fn compile(&self) -> string { … }
 /// ```
 ///
 /// A generator is called with nothing, so the engine holds it to a shape: it
@@ -197,6 +216,7 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// pub struct Build;
 ///
+/// /// Builds and publishes images.
 /// #[dagger::object]
 /// impl Build {
 ///     /// Build an image and return its tag.
@@ -226,6 +246,18 @@ pub fn check(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     dagger::serve::<Build>()
 /// }
 /// ```
+///
+/// # Descriptions
+///
+/// The `///` comment on the annotated block is the object's description, and
+/// the module's: a Rust module's root type *is* the module, and the crate's own
+/// `//!` doc belongs to the file, which an attribute macro on an `impl` never
+/// sees. Write it on the `impl`, not on the `struct` — the two are separate
+/// items and only the one carrying this attribute reaches the macro.
+///
+/// Each declaration also carries where it was written — file, line and column,
+/// read off its `proc_macro::Span` — so an engine-side error about a function
+/// or an argument points at the source rather than at a name.
 ///
 /// # Argument options
 ///
@@ -364,12 +396,17 @@ fn is_dagger_attr(stream: TokenStream) -> bool {
 #[derive(Default)]
 struct FunctionOptions {
     generate: bool,
+    deprecated: String,
 }
 
 /// Read the options a function's marker attribute carried.
 ///
 /// These are the flags Go writes as `+` pragmas in a doc comment — one slot,
 /// several markers — rather than the per-argument `#[dagger(...)]` options.
+///
+/// `deprecated = "..."` is spelled here exactly as it is on a parameter, since
+/// it is the same option one level up; the difference is only which attribute
+/// carries it, because a method has no `#[dagger(...)]` of its own.
 fn function_options_of(f: &Function) -> Result<FunctionOptions, String> {
     let mut options = FunctionOptions::default();
     for part in split_commas(&f.options) {
@@ -377,9 +414,18 @@ fn function_options_of(f: &Function) -> Result<FunctionOptions, String> {
             Some(TokenTree::Ident(id)) if part.len() == 1 && id.to_string() == "generate" => {
                 options.generate = true
             }
+            Some(TokenTree::Ident(id)) if id.to_string() == "deprecated" => {
+                // Skip the `=`, the way `options_of` does for a parameter.
+                let value = &part[1..];
+                let value = match value.first() {
+                    Some(TokenTree::Punct(p)) if p.as_char() == '=' => &value[1..],
+                    _ => value,
+                };
+                options.deprecated = literal_text(value, "deprecated")?;
+            }
             _ => {
                 return Err(format!(
-                    "unrecognized option `{}` on `{}`; #[dagger::function(...)] accepts `generate`",
+                    "unrecognized option `{}` on `{}`; #[dagger::function(...)] accepts `generate` and `deprecated = \"...\"`",
                     render(&part),
                     f.name
                 ))
@@ -684,20 +730,37 @@ fn camel_case(name: &str) -> String {
 fn expand(item: TokenStream) -> Result<TokenStream, String> {
     // `check` is a marker of its own rather than an option on `function`, so a
     // method carrying only `#[dagger::check]` is still exported.
-    let (type_name, functions) = parse::parse_impl(item, &["function", "check"])?;
+    let block = parse::parse_impl(item, &["function", "check"])?;
+
+    object_impl(&block)?
+        .parse()
+        .map_err(|e| format!("generated code did not parse: {e}"))
+}
+
+/// Render the `Object` impl for one parsed block.
+///
+/// Split out of [`expand`] so the crate's own tests can reach it: everything
+/// above it speaks in `TokenTree`, which a test binary may not touch, and
+/// everything below it speaks in `String`.
+fn object_impl(block: &parse::ImplBlock) -> Result<String, String> {
+    let type_name = &block.type_name;
 
     let mut defs = String::new();
     let mut arms = String::new();
 
-    for f in &functions {
+    for f in &block.functions {
         defs.push_str(&function_def(f)?);
-        arms.push_str(&dispatch_arm(&type_name, f)?);
+        arms.push_str(&dispatch_arm(type_name, f)?);
     }
 
-    let generated = format!(
+    Ok(format!(
         r#"
 impl ::dagger::Object for {type_name} {{
     const NAME: &'static str = {name_literal};
+
+    const DOC: &'static str = {doc_literal};
+
+    const SOURCE: ::dagger::SourceMapDef = {source};
 
     fn functions() -> &'static [::dagger::FunctionDef] {{
         const FUNCTIONS: &[::dagger::FunctionDef] = &[{defs}];
@@ -716,19 +779,43 @@ impl ::dagger::Object for {type_name} {{
 }}
 "#,
         type_name = type_name,
-        name_literal = quote_str(&type_name),
+        name_literal = quote_str(type_name),
+        doc_literal = quote_str(&block.doc),
+        source = source_map_def(&block.source),
         defs = defs,
         arms = arms,
-    );
+    ))
+}
 
-    generated
-        .parse()
-        .map_err(|e| format!("generated code did not parse: {e}"))
+/// Render one `SourceMapDef`.
+///
+/// A location the parser had no span for becomes `UNKNOWN` rather than a
+/// literal with a zero line, so `register` can tell "no source map" from "line
+/// zero" without inspecting the numbers.
+fn source_map_def(loc: &SourceLoc) -> String {
+    if loc.file.is_empty() {
+        return "::dagger::SourceMapDef::UNKNOWN".to_string();
+    }
+    format!(
+        "::dagger::SourceMapDef {{ file: {file}, line: {line}, column: {column} }}",
+        file = quote_str(&loc.file),
+        line = loc.line,
+        column = loc.column,
+    )
 }
 
 /// Render one `FunctionDef`.
 fn function_def(f: &Function) -> Result<String, String> {
     let function_options = function_options_of(f)?;
+    function_def_with(f, &function_options)
+}
+
+/// Render one `FunctionDef` from options already read.
+///
+/// The split is what makes the marker attribute's options testable: reading
+/// them means walking a `TokenTree`, which a test binary may not do, but the
+/// text they turn into is ordinary `String` work.
+fn function_def_with(f: &Function, function_options: &FunctionOptions) -> Result<String, String> {
     let mut args = String::new();
     for param in &f.params {
         let options = options_of(&param.attrs)?;
@@ -787,7 +874,7 @@ fn function_def(f: &Function) -> Result<String, String> {
             .join(", ");
 
         args.push_str(&format!(
-            "::dagger::ArgDef {{ name: {name}, kind: {kind}, object: {object}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated} }},",
+            "::dagger::ArgDef {{ name: {name}, kind: {kind}, object: {object}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated}, source: {source} }},",
             name = quote_str(&camel_case(&param.name)),
             kind = quote_str(kind.kind),
             object = quote_str(&kind.object),
@@ -797,6 +884,7 @@ fn function_def(f: &Function) -> Result<String, String> {
             path = quote_str(&options.default_path),
             ignore = ignore,
             deprecated = quote_str(&options.deprecated),
+            source = source_map_def(&param.source),
         ));
     }
 
@@ -817,13 +905,15 @@ fn function_def(f: &Function) -> Result<String, String> {
     }
 
     Ok(format!(
-        "::dagger::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_object: {ret_object}, is_check: {is_check}, generator: {generator}, args: &[{args}] }},",
+        "::dagger::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_object: {ret_object}, is_check: {is_check}, generator: {generator}, deprecated: {deprecated}, source: {source}, args: &[{args}] }},",
         name = quote_str(&camel_case(&f.name)),
         doc = quote_str(&f.doc),
         ret = quote_str(ret.kind),
         ret_object = quote_str(&ret.object),
         is_check = f.has_marker("check"),
         generator = function_options.generate,
+        deprecated = quote_str(&function_options.deprecated),
+        source = source_map_def(&f.source),
         args = args,
     ))
 }

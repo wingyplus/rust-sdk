@@ -118,6 +118,25 @@ Method names are camelCased for the API, so `container_echo` is called as
 `container-echo`. The method's `///` doc comment becomes the function's
 description.
 
+### Descriptions
+
+Three of them, and they come from three different places:
+
+| what | where it is written |
+| --- | --- |
+| a function's | the method's `///` comment |
+| an argument's | `#[dagger(doc = "...")]`, since Rust has no doc comments on parameters |
+| the object's, and the module's | the `///` comment on the annotated `impl` block |
+
+The last one is the one to get right: `#[dagger::object]` is handed the `impl`
+block and nothing else, so a doc comment on the `struct` — or the crate's own
+`//!` — never reaches it. Write it on the block. The same text serves as the
+module's description, because a Rust module's root type *is* the module.
+
+Every declaration also carries the file, line and column it was written at, read
+off its `proc_macro::Span`, so an engine-side error about a function or an
+argument can point at the source.
+
 ### Function options
 
 What a function *is* goes in the marker attribute — the one slot Go writes its
@@ -126,6 +145,10 @@ What a function *is* goes in the marker attribute — the one slot Go writes its
 | Option | Effect | Go SDK equivalent |
 | --- | --- | --- |
 | `generate` | The function is a generator; `dagger generate` runs it | `+generate` |
+| `deprecated = "..."` | Marks the function deprecated, with a migration note | `+deprecated` |
+
+`deprecated` is the same option an argument carries, one level up; it goes in
+the marker attribute because a method has no `#[dagger(...)]` of its own.
 
 ### Generators
 

@@ -2,8 +2,11 @@
 name = "dagger"
 version = "0.1.0"
 edition = "2021"
-# goish's floor. The runtime image must satisfy this too.
-rust-version = "1.86"
+# 1.88 rather than goish's 1.86 floor: dagger-macros below reads source maps off
+# `proc_macro::Span`, stable since 1.88.0, and this crate cannot be built
+# without it. The runtime image must satisfy this too — `rustImage` in mod.dang
+# and runtime/main.dang is pinned at 1.90.
+rust-version = "1.88"
 license = "Apache-2.0"
 description = "Dagger client library for Rust modules, built on goish."
 repository = "https://github.com/wingyplus/rust-sdk"
