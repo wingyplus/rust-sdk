@@ -76,14 +76,16 @@ dagger call rust-sdk init-module --name my-module --path .dagger/modules/my-modu
 
 ## Writing functions
 
-A module's API is declared with two attributes. `#[dagger::object]` on the
-`impl` block reads the signatures at compile time; `#[dagger::function]`
+A module's API is declared with two attributes. `#[dagger::object]` goes on both
+halves of the object — the `struct` that holds its state and the `impl` that
+holds its functions — and reads them at compile time; `#[dagger::function]`
 marks which methods are exposed. Anything unmarked stays private, so helpers
 need no special treatment.
 
 ```rust
 use goish::{fmt, int, string};
 
+#[dagger::object]
 pub struct Build;
 
 #[dagger::object]
@@ -126,6 +128,7 @@ Three of them, and they come from three different places:
 | --- | --- |
 | a function's | the method's `///` comment |
 | an argument's | `#[dagger(doc = "...")]`, since Rust has no doc comments on parameters |
+| a field's | the field's `///` comment — a field is state rather than an input, and Rust *does* have doc comments there |
 | the object's, and the module's | the `///` comment on the annotated `impl` block |
 
 The last one is the one to get right: `#[dagger::object]` is handed the `impl`
@@ -136,6 +139,71 @@ module's description, because a Rust module's root type *is* the module.
 Every declaration also carries the file, line and column it was written at, read
 off its `proc_macro::Span`, so an engine-side error about a function or an
 argument can point at the source.
+
+### State and the constructor
+
+A `pub` field of the annotated `struct` is *state*: the engine declares it,
+keeps the value the module last encoded, and hands it back on the next call. A
+`#[dagger::constructor]` is what fills it in, once, and its arguments become the
+module's own flags rather than every function's.
+
+```rust
+use goish::{fmt, int, string};
+
+#[dagger::object]
+pub struct Build {
+    /// The image every step runs in.
+    pub image: string,
+    /// The tag to publish under.
+    pub tag: Option<string>,
+}
+
+/// Builds and publishes images.
+#[dagger::object]
+impl Build {
+    /// Configure the builder.
+    #[dagger::constructor]
+    pub fn new(#[dagger(default = "alpine:3.21")] image: string) -> Self {
+        Build { image, tag: None }
+    }
+
+    /// Publish under a tag.
+    #[dagger::function]
+    pub fn with_tag(self, tag: string) -> Self {
+        Build { tag: Some(tag), ..self }
+    }
+
+    /// What would be published.
+    #[dagger::function]
+    pub fn target(&self) -> string {
+        fmt::Sprintf!("%s:%s", self.image, self.tag.clone().unwrap_or(string("latest")))
+    }
+}
+```
+
+```console
+$ dagger call --image rust:1.90 with-tag --tag v1 target
+rust:1.90:v1
+
+$ dagger call --image rust:1.90 image        # a field, not a function
+rust:1.90
+```
+
+Three things follow from how that round trip works:
+
+- **A field must be `pub`.** A private one would be state the engine never sees,
+  and so state that does not survive the call it was set in. The macro says so
+  rather than dropping it silently.
+- **A function may return `Self`.** It goes back as the object's *state* rather
+  than as an ID — the engine holds no value to mint one for — which is what lets
+  the caller go on chaining from it.
+- **A `struct` with fields wants a constructor.** Without one the object is
+  built from an empty document, which works exactly when there is nothing to
+  fill; a required field with nothing to fill it fails at call time, naming it.
+
+This is the Go SDK's `func New(...)` and its exported struct fields. The name
+`new` is only a convention here — the attribute is what marks it — and an object
+may declare at most one.
 
 ### Function options
 
@@ -520,6 +588,13 @@ What works today:
   the engine is registered with, and one member name is what crosses the call
   boundary in both directions.
 
+- Object state and a constructor. `#[dagger::object]` on the `struct` declares
+  its `pub` fields, `#[dagger::constructor]` fills them in once, and a function
+  returning `Self` hands back a reconfigured object — so `dagger call
+  --image=rust:1.90 with-tag --tag=v1 target` is three calls against one object
+  rather than three copies of the same arguments. See
+  [State and the constructor](#state-and-the-constructor).
+
 What is stubbed:
 
 - **Handing an object back to a client method.** As the example above shows, a
@@ -535,11 +610,17 @@ What is stubbed:
   what to write instead; `Option<slice<T>>` — the list itself being what may be
   absent — works in both directions.
 
+- **Objects a module defines.** A module serves exactly one: `serve::<T>()` takes
+  one root object, and a function that wanted to return a `Tests` object with
+  functions of its own has nowhere to declare it. State and the constructor
+  above are the round trip such an object would need; what is missing is the
+  second object.
+
 Function declaration and dispatch **work**: `#[dagger::object]`,
-`#[dagger::function]`, `#[dagger::check]` and `#[dagger::enum_type]` read
-declarations at compile time and emit a static table the entrypoint walks, with
-argument options in `#[dagger(...)]` and function options — `generate` — in the
-marker itself. This is the one piece with no Go analogue: the Go SDK recovers
+`#[dagger::function]`, `#[dagger::check]`, `#[dagger::constructor]` and
+`#[dagger::enum_type]` read declarations at compile time and emit a static table
+the entrypoint walks, with argument options in `#[dagger(...)]` and function
+options — `generate` — in the marker itself. This is the one piece with no Go analogue: the Go SDK recovers
 signatures by parsing the user's package, so it is proc-macros rather than a
 port.
 

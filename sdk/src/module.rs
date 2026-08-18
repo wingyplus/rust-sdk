@@ -5,8 +5,24 @@
 //! allocation. Everything that carries a *value* at runtime is a goish type.
 //!
 //! [`serve`] is the entry point a module's `main` calls: it answers the
-//! engine's pending call, either by describing what this module serves
-//! ([`register`]) or by running one of its functions.
+//! engine's pending call, by describing what this module serves
+//! ([`register`]), by building the object its constructor configures, or by
+//! running one of its functions.
+//!
+//! # How the object survives between calls
+//!
+//! A module object has no ID — the engine holds no value to mint one for — so
+//! it crosses the boundary as *itself*: the JSON document its fields encode to.
+//! The engine keeps that document and hands it back as
+//! `currentFunctionCall.parent`, which [`State`] decodes and
+//! [`ObjectState::from_state`] turns into the receiver a function is dispatched
+//! on. A function that returns the object writes the document again, so a chain
+//! of calls is one object passed along rather than one rebuilt from nothing each
+//! time.
+//!
+//! That is why [`Object`] takes its receiver by value and why [`Object::invoke`]
+//! is not an associated function any more: there *is* a receiver now, and it
+//! belongs to the one call it was decoded for.
 //!
 //! # Why this talks to the engine through [`querybuilder`]
 //!
@@ -140,6 +156,34 @@ pub struct FunctionDef {
     pub args: &'static [ArgDef],
 }
 
+/// One field of an object's state.
+///
+/// Read off a `pub` field of the annotated `struct`, and registered with
+/// `withField` so the engine can both hand the value back to a later call and
+/// answer for it directly — `dagger call --image=alpine image` never reaches
+/// the module. The shape mirrors [`ArgDef`], minus everything about being
+/// *supplied*: a field has no default, no context path and no ignore list,
+/// because it is state rather than an input.
+pub struct FieldDef {
+    /// API name, camelCased from the Rust field.
+    pub name: &'static str,
+    /// The engine's TypeDefKind for the field's type.
+    pub kind: &'static str,
+    /// For `OBJECT_KIND` and `ENUM_KIND`, the engine's name for the type. Empty
+    /// for every other kind.
+    pub type_name: &'static str,
+    /// Whether the field is a *list* of `kind`, the way [`ArgDef::list`] is.
+    pub list: bool,
+    /// Whether the field may be absent — `Option<T>`.
+    pub optional: bool,
+    /// The field's `///` doc comment.
+    pub doc: &'static str,
+    /// From `#[dagger(deprecated = "...")]`. Empty when unset.
+    pub deprecated: &'static str,
+    /// Where the field was written.
+    pub source: SourceMapDef,
+}
+
 /// One member of an enum a module declares.
 pub struct EnumMemberDef {
     /// The member name, spelled as the Rust variant is.
@@ -187,8 +231,47 @@ pub trait EnumType: Sized {
     fn from_member(name: &string) -> Result<Self, string>;
 }
 
-/// A module's root object, as declared by `#[dagger::object]`.
-pub trait Object {
+/// The data an object carries from one call to the next, as declared by
+/// `#[dagger::object]` on the `struct`.
+///
+/// A module object crosses the boundary as *itself* rather than as an ID: the
+/// engine keeps the JSON document the module last handed back and returns it as
+/// `parent` on the next call. So the receiver is built rather than named, and
+/// the two halves of that round trip are [`from_state`](ObjectState::from_state)
+/// and [`to_state`](ObjectState::to_state).
+///
+/// # Why this is a second attribute rather than part of [`Object`]
+///
+/// A Rust type's data and its behaviour are two items — a `struct` and an
+/// `impl` — and an attribute macro sees only the one it is written on. The
+/// `impl` block has no way to learn the field list, so `#[dagger::object]` goes
+/// on both: on the `struct` it emits this trait, on the `impl` it emits
+/// [`Object`].
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` declares no state",
+    label = "no `#[dagger::object]` on this type's `struct`",
+    note = "an object is a `struct` and an `impl`, and `#[dagger::object]` goes on both: the `impl` declares the functions, the `struct` declares the fields that survive from one call to the next"
+)]
+pub trait ObjectState: Sized {
+    /// The object's `pub` fields, in declaration order.
+    fn fields() -> &'static [FieldDef];
+
+    /// Rebuild the receiver from the state the engine sent.
+    ///
+    /// Fails when a declared field is absent or holds the wrong type, naming
+    /// it. A type with no fields ignores the state and cannot fail.
+    fn from_state(state: &State) -> Result<Self, string>;
+
+    /// Encode the state back out, as the JSON document the engine stores.
+    ///
+    /// Fallible because a field may itself be an engine object, and reading an
+    /// object's ID is a round trip.
+    fn to_state(&self) -> Result<string, string>;
+}
+
+/// A module's root object, as declared by `#[dagger::object]` on its `impl`
+/// block.
+pub trait Object: ObjectState {
     /// The object name the engine knows this module by.
     const NAME: &'static str;
 
@@ -214,11 +297,41 @@ pub trait Object {
         &[]
     }
 
+    /// The `#[dagger::constructor]`, if the object declared one.
+    ///
+    /// It is registered under the empty name, which is how the engine spells a
+    /// constructor: its arguments become the module's own flags, so
+    /// `dagger call --image=alpine build` configures the object once and then
+    /// calls a function on it.
+    ///
+    /// Defaulted for the same reason [`enums`](Object::enums) is: most modules
+    /// declare none.
+    fn constructor() -> Option<&'static FunctionDef> {
+        None
+    }
+
+    /// Run the constructor and encode the object it built.
+    ///
+    /// The default is what an object with no constructor does: the engine asked
+    /// for a value and there is nothing to configure, so the state is whatever
+    /// an empty document decodes to — which for a type with no fields is the
+    /// type itself, and for one with fields is an error naming the first field
+    /// nothing supplied.
+    fn construct(_args: &Arguments) -> Result<string, string> {
+        Self::from_state(&State::empty())?.to_state()
+    }
+
     /// Call one function by API name and return its JSON-encoded result.
+    ///
+    /// The receiver is the object the engine's `parent` decoded to, so a
+    /// function reads the state a constructor or an earlier call put there. It
+    /// is taken by value: a builder that consumes `self` and returns a
+    /// reconfigured object is as ordinary a signature as one that borrows it,
+    /// and the receiver belongs to this one call either way.
     ///
     /// The name stays a goish `string`: the generated dispatch compares it with
     /// `==` against literals rather than `match`, which would need a `&str`.
-    fn invoke(name: &string, args: &Arguments) -> Result<string, string>;
+    fn invoke(self, name: &string, args: &Arguments) -> Result<string, string>;
 }
 
 /// The arguments the engine supplied for this call.
@@ -228,6 +341,13 @@ pub trait Object {
 /// type.
 pub struct Arguments {
     entries: slice<(string, string)>,
+    /// The noun a failure names.
+    ///
+    /// The same accessors serve an object's fields — see [`State`] — and the
+    /// only thing that differs there is what to call the thing that was missing
+    /// or of the wrong type. Carrying the word is what lets the decoding rules
+    /// be written once.
+    what: &'static str,
 }
 
 impl Arguments {
@@ -237,7 +357,23 @@ impl Arguments {
     /// what arrives is a JSON document *as text*, which
     /// [`lookup`](Arguments::lookup) decodes once an accessor asks for it.
     pub fn new(entries: slice<(string, string)>) -> Arguments {
-        Arguments { entries }
+        Arguments {
+            entries,
+            what: "argument",
+        }
+    }
+
+    /// The same, over an object's fields rather than a call's arguments.
+    ///
+    /// Everything below is identical for the two; what this changes is the word
+    /// a failure uses, so a module told about a missing *field* is not sent
+    /// looking for an argument nobody asked it for. [`State::decode`] is what
+    /// builds one.
+    fn fields(entries: slice<(string, string)>) -> Arguments {
+        Arguments {
+            entries,
+            what: "field",
+        }
     }
 
     /// Find an argument's decoded value.
@@ -262,12 +398,17 @@ impl Arguments {
         None
     }
 
-    fn missing(name: &str) -> string {
-        string("missing required argument: ") + name
+    /// The three messages, each naming what this carrier calls its values.
+    ///
+    /// They start from an empty `string` rather than from `self.what`, because
+    /// goish's `string(…)` conversion takes a `&'static str` and the borrow
+    /// here is not one as far as the signature is concerned.
+    fn missing(&self, name: &str) -> string {
+        string("missing required ") + self.what + ": " + name
     }
 
-    fn wrong_type(name: &str, expected: &str) -> string {
-        string("argument ") + name + " is not " + expected
+    fn wrong_type(&self, name: &str, expected: &str) -> string {
+        string("") + self.what + " " + name + " is not " + expected
     }
 
     /// The same, for one element of a list.
@@ -276,8 +417,8 @@ impl Arguments {
     /// went wrong, and for a list that leaves the caller comparing their own
     /// values against a message that fits any of them. `querybuilder` names the
     /// index on the way in for the same reason.
-    fn wrong_element(name: &str, index: int, expected: &str) -> string {
-        string("argument ") + name + "[" + strconv::Itoa(index) + "] is not " + expected
+    fn wrong_element(&self, name: &str, index: int, expected: &str) -> string {
+        string("") + self.what + " " + name + "[" + strconv::Itoa(index) + "] is not " + expected
     }
 
     /// An optional list argument, decoded element by element.
@@ -300,7 +441,7 @@ impl Arguments {
         };
         let items = match value.AsArray() {
             Some(items) => items.clone(),
-            None => return Err(Arguments::wrong_type(name, "a list")),
+            None => return Err(self.wrong_type(name, "a list")),
         };
 
         let mut out = make!([]T, 0, items.Len());
@@ -308,7 +449,7 @@ impl Arguments {
         while i < items.Len() {
             match element(&items[i]) {
                 Some(decoded) => out = append!(out, decoded),
-                None => return Err(Arguments::wrong_element(name, i, expected)),
+                None => return Err(self.wrong_element(name, i, expected)),
             }
             i += 1;
         }
@@ -319,7 +460,7 @@ impl Arguments {
     pub fn string(&self, name: &str) -> Result<string, string> {
         match self.string_opt(name)? {
             Some(value) => Ok(value),
-            None => Err(Arguments::missing(name)),
+            None => Err(self.missing(name)),
         }
     }
 
@@ -330,7 +471,7 @@ impl Arguments {
             Some(value) if value.IsNull() => Ok(None),
             Some(value) => match value.AsString() {
                 Some(s) => Ok(Some(s.clone())),
-                None => Err(Arguments::wrong_type(name, "a string")),
+                None => Err(self.wrong_type(name, "a string")),
             },
         }
     }
@@ -339,7 +480,7 @@ impl Arguments {
     pub fn int(&self, name: &str) -> Result<goish::int, string> {
         match self.int_opt(name)? {
             Some(value) => Ok(value),
-            None => Err(Arguments::missing(name)),
+            None => Err(self.missing(name)),
         }
     }
 
@@ -350,7 +491,7 @@ impl Arguments {
             Some(value) if value.IsNull() => Ok(None),
             Some(value) => match value.AsNumber() {
                 Some(n) => Ok(Some(n as goish::int)),
-                None => Err(Arguments::wrong_type(name, "an integer")),
+                None => Err(self.wrong_type(name, "an integer")),
             },
         }
     }
@@ -359,7 +500,7 @@ impl Arguments {
     pub fn float(&self, name: &str) -> Result<goish::float64, string> {
         match self.float_opt(name)? {
             Some(value) => Ok(value),
-            None => Err(Arguments::missing(name)),
+            None => Err(self.missing(name)),
         }
     }
 
@@ -374,7 +515,7 @@ impl Arguments {
             Some(value) if value.IsNull() => Ok(None),
             Some(value) => match value.AsNumber() {
                 Some(n) => Ok(Some(n)),
-                None => Err(Arguments::wrong_type(name, "a number")),
+                None => Err(self.wrong_type(name, "a number")),
             },
         }
     }
@@ -387,7 +528,7 @@ impl Arguments {
     pub fn object(&self, name: &str) -> Result<string, string> {
         match self.object_opt(name)? {
             Some(value) => Ok(value),
-            None => Err(Arguments::missing(name)),
+            None => Err(self.missing(name)),
         }
     }
 
@@ -398,7 +539,7 @@ impl Arguments {
             Some(value) if value.IsNull() => Ok(None),
             Some(value) => match value.AsString() {
                 Some(s) => Ok(Some(s.clone())),
-                None => Err(Arguments::wrong_type(name, "an object id")),
+                None => Err(self.wrong_type(name, "an object id")),
             },
         }
     }
@@ -413,7 +554,7 @@ impl Arguments {
     pub fn enum_member(&self, name: &str) -> Result<string, string> {
         match self.enum_member_opt(name)? {
             Some(value) => Ok(value),
-            None => Err(Arguments::missing(name)),
+            None => Err(self.missing(name)),
         }
     }
 
@@ -424,7 +565,7 @@ impl Arguments {
             Some(value) if value.IsNull() => Ok(None),
             Some(value) => match value.AsString() {
                 Some(s) => Ok(Some(s.clone())),
-                None => Err(Arguments::wrong_type(name, "an enum member")),
+                None => Err(self.wrong_type(name, "an enum member")),
             },
         }
     }
@@ -433,7 +574,7 @@ impl Arguments {
     pub fn bool(&self, name: &str) -> Result<bool, string> {
         match self.bool_opt(name)? {
             Some(value) => Ok(value),
-            None => Err(Arguments::missing(name)),
+            None => Err(self.missing(name)),
         }
     }
 
@@ -444,7 +585,7 @@ impl Arguments {
             Some(value) if value.IsNull() => Ok(None),
             Some(value) => match value.AsBool() {
                 Some(b) => Ok(Some(b)),
-                None => Err(Arguments::wrong_type(name, "a boolean")),
+                None => Err(self.wrong_type(name, "a boolean")),
             },
         }
     }
@@ -453,7 +594,7 @@ impl Arguments {
     pub fn string_list(&self, name: &str) -> Result<slice<string>, string> {
         match self.string_list_opt(name)? {
             Some(value) => Ok(value),
-            None => Err(Arguments::missing(name)),
+            None => Err(self.missing(name)),
         }
     }
 
@@ -466,7 +607,7 @@ impl Arguments {
     pub fn int_list(&self, name: &str) -> Result<slice<int>, string> {
         match self.int_list_opt(name)? {
             Some(value) => Ok(value),
-            None => Err(Arguments::missing(name)),
+            None => Err(self.missing(name)),
         }
     }
 
@@ -479,7 +620,7 @@ impl Arguments {
     pub fn float_list(&self, name: &str) -> Result<slice<goish::float64>, string> {
         match self.float_list_opt(name)? {
             Some(value) => Ok(value),
-            None => Err(Arguments::missing(name)),
+            None => Err(self.missing(name)),
         }
     }
 
@@ -496,7 +637,7 @@ impl Arguments {
     pub fn bool_list(&self, name: &str) -> Result<slice<bool>, string> {
         match self.bool_list_opt(name)? {
             Some(value) => Ok(value),
-            None => Err(Arguments::missing(name)),
+            None => Err(self.missing(name)),
         }
     }
 
@@ -513,13 +654,146 @@ impl Arguments {
     pub fn object_list(&self, name: &str) -> Result<slice<string>, string> {
         match self.object_list_opt(name)? {
             Some(value) => Ok(value),
-            None => Err(Arguments::missing(name)),
+            None => Err(self.missing(name)),
         }
     }
 
     /// An optional list of objects, as the engine's IDs for them.
     pub fn object_list_opt(&self, name: &str) -> Result<Option<slice<string>>, string> {
         self.list_opt(name, "an object id", |value| value.AsString().cloned())
+    }
+}
+
+/// The state the object being called on arrived with.
+///
+/// The engine keeps the JSON document a module object was last encoded to and
+/// hands it back as `currentFunctionCall.parent`; this is that document,
+/// flattened into its fields. A top-level call carries an empty object, which
+/// is the engine's own answer to "the function is on the module itself".
+///
+/// # Why it is an [`Arguments`]
+///
+/// A field and an argument are the same thing to a decoder: a name, and a JSON
+/// value under it. Every rule past finding the name is shared — an absent value
+/// and a JSON `null` both read as missing, a wrong type is an error naming what
+/// was expected, an element error names its index — and so is the set of types,
+/// down to lists of objects and enum members. Writing that twice is how the two
+/// drift apart, and the drift that matters is silent: an accessor and the
+/// encoder on the other side of the boundary have to agree, or a value changes
+/// on the way through rather than failing.
+///
+/// So this holds an `Arguments` over the parent's fields and derefs to it, and
+/// the generated [`ObjectState::from_state`] reads one accessor per declared
+/// field. The cost is re-encoding each field's value as text at decode time,
+/// which is what [`Arguments`] stores; that is a few small allocations per
+/// call against one copy of the decoding rules.
+pub struct State {
+    values: Arguments,
+}
+
+impl State {
+    /// No state at all: every field reads as absent.
+    pub fn empty() -> State {
+        State {
+            values: Arguments::fields(make!([](string, string), 0, 0)),
+        }
+    }
+
+    /// Decode the `parent` document the engine sent.
+    ///
+    /// An empty document is the empty state rather than a syntax error: a
+    /// module that has never encoded itself has nothing to send back, and the
+    /// distinction is not one a field accessor could act on anyway. So is a
+    /// document that is not an object, which is what `null` arrives as.
+    pub fn decode(document: &string) -> Result<State, string> {
+        if document.Len() == 0 {
+            return Ok(State::empty());
+        }
+        let mut parsed = json::Value::Null;
+        let err = json::Unmarshal(&goish::bytes(document.clone()), &mut parsed);
+        if err != nil {
+            return Err(string("decoding the parent object: ") + err.Error());
+        }
+        let fields = match parsed.AsObject() {
+            Some(fields) => fields,
+            None => return Ok(State::empty()),
+        };
+
+        let mut entries = make!([](string, string), 0, 0);
+        let names = fields.Keys();
+        let mut i: int = 0;
+        while i < names.Len() {
+            let name = names[i].clone();
+            i += 1;
+            let (value, ok) = fields.GetRef(name.clone());
+            let value = match (value, ok) {
+                (Some(value), true) => value,
+                _ => continue,
+            };
+            let (encoded, err) = json::Marshal(value);
+            if err != nil {
+                return Err(string("re-encoding the parent field ") + name + ": " + err.Error());
+            }
+            entries = append!(entries, (name, string(encoded)));
+        }
+        Ok(State {
+            values: Arguments::fields(entries),
+        })
+    }
+}
+
+impl core::ops::Deref for State {
+    type Target = Arguments;
+
+    fn deref(&self) -> &Arguments {
+        &self.values
+    }
+}
+
+/// Builds the JSON document an object's state is stored as.
+///
+/// One `put` per declared field, in declaration order, each handed a value the
+/// `encode_*` functions below already rendered — the same ones the dispatch
+/// encodes a return with, so a field and a return of the same type make the
+/// same round trip.
+pub struct StateWriter {
+    out: string,
+    empty: bool,
+}
+
+impl Default for StateWriter {
+    fn default() -> StateWriter {
+        StateWriter::new()
+    }
+}
+
+impl StateWriter {
+    /// An object with no fields yet.
+    pub fn new() -> StateWriter {
+        StateWriter {
+            out: string("{"),
+            empty: true,
+        }
+    }
+
+    /// Append one field, whose value is already JSON.
+    ///
+    /// The name is `&'static str` because that is what a [`FieldDef`] carries
+    /// and what the macro emits — a field name comes from the source, never
+    /// from the wire.
+    pub fn put(&mut self, name: &'static str, encoded: string) {
+        if !self.empty {
+            self.out += ",";
+        }
+        self.empty = false;
+        self.out += crate::json_string(&string(name));
+        self.out += ":";
+        self.out += encoded;
+    }
+
+    /// The finished document.
+    pub fn finish(self) -> string {
+        self.out + "}"
     }
 }
 
@@ -568,7 +842,7 @@ pub fn encode_void() -> string {
     string("null")
 }
 
-/// JSON-encode the absent half of an `Option<T>` return.
+/// JSON-encode the absent half of an `Option<T>`.
 ///
 /// The same three characters [`encode_void`] writes, and deliberately a separate
 /// function: a Void return says the function produces no value *ever*, and this
@@ -576,6 +850,12 @@ pub fn encode_void() -> string {
 /// told which is which by the return `TypeDef` — `VOID_KIND` against a kind
 /// carrying `withOptional` — and only the declaration distinguishes them, since
 /// the wire form cannot.
+///
+/// A field the object does not carry is written the same way rather than being
+/// left out of the document, matching how the engine hands one in: an accessor
+/// reads the two as the same thing, so the round trip is closed either way, and
+/// writing the key keeps the encoded object shaped like the type that declared
+/// it.
 ///
 /// Infallible, unlike [`encode_object`]: there is no object to resolve an ID
 /// for, which is the whole reason an `Option<Directory>` that is `None` costs no
@@ -592,6 +872,18 @@ pub fn encode_null() -> string {
 /// sent yet, and asking for its ID is what runs it.
 pub fn encode_object<T: crate::ObjectId>(value: &T) -> Result<string, string> {
     Ok(crate::json_string(&value.to_id()?))
+}
+
+/// JSON-encode a module object as its state.
+///
+/// The other kind of object return, and the one that is not an ID:
+/// [`encode_object`] resolves an *engine* object, which the engine already
+/// holds and can name, while a module's own object exists only as the fields it
+/// carries. So this is the document [`ObjectState::to_state`] wrote, handed
+/// straight back — the engine keeps it and returns it as `parent` when the
+/// caller goes on chaining.
+pub fn encode_state<T: ObjectState>(value: &T) -> Result<string, string> {
+    value.to_state()
 }
 
 /// JSON-encode a list, given an encoder for one element.
@@ -739,27 +1031,37 @@ pub fn serve<T: Object>() -> ! {
     };
 
     // The whole call in one round trip. `inputArgs` is a list of objects, so it
-    // is a nested selection rather than a leaf.
+    // is a nested selection rather than a leaf; `parent` is a JSON scalar, which
+    // arrives as the document's own text the way an argument's value does.
     let call = engine::fetch(
         &session,
         &Chain::root().field("currentFunctionCall", string("")),
         &(
             Leaf::<string>::new("parentName"),
             Leaf::<string>::new("name"),
+            Leaf::<string>::new("parent"),
             ListField::<ArgValueFields>::new("inputArgs").select(|a| (a.name(), a.value())),
         ),
     );
-    let (parent_name, name, input_args) = match call {
+    let (parent_name, name, parent, input_args) = match call {
         Ok(call) => call,
         Err(message) => fail(message),
     };
 
-    // An empty parentName is the engine asking what this module serves; anything
-    // else is a call against that object.
+    // Three calls share one entry point, told apart by which of the two names is
+    // empty. An empty parentName is the engine asking what this module serves.
+    // An empty function name on a named parent is the constructor: the engine
+    // spells it that way because it is the object's own function rather than one
+    // of the object's. Anything else is a call against a parent the engine has
+    // the state for.
     let result = if parent_name.Len() == 0 {
         register::<T>(&session)
+    } else if name.Len() == 0 {
+        T::construct(&Arguments::new(input_args))
     } else {
-        T::invoke(&name, &Arguments::new(input_args))
+        State::decode(&parent)
+            .and_then(|state| T::from_state(&state))
+            .and_then(|receiver| receiver.invoke(&name, &Arguments::new(input_args)))
     };
 
     match result.and_then(|value| return_value(&session, &value)) {
@@ -770,9 +1072,9 @@ pub fn serve<T: Object>() -> ! {
 
 /// Describe the module to the engine and return the description's ID.
 ///
-/// Build a `TypeDef` for the root object, hang every declared function off it,
-/// attach it to a `Module` alongside every enum the module declares, and hand
-/// back the module's ID.
+/// Build a `TypeDef` for the root object, hang its fields, its functions and
+/// its constructor off it, attach it to a `Module` alongside every enum the
+/// module declares, and hand back the module's ID.
 fn register<T: Object>(transport: &dyn Transport) -> Result<string, string> {
     let mut args = Args::new();
     args.put("name", arg_string(T::NAME));
@@ -789,6 +1091,27 @@ fn register<T: Object>(transport: &dyn Transport) -> Result<string, string> {
         .field("typeDef", string(""))
         .field("withObject", args.finish());
 
+    // One `withField` per `pub` field of the struct. A field is not a function:
+    // the engine answers for it out of the state the module last handed back,
+    // so `dagger call --image=alpine image` never starts a module process.
+    for def in T::fields() {
+        let field_type = build_type_def(transport, def.kind, def.type_name, def.list, def.optional)?;
+        let mut args = Args::new();
+        args.put("name", arg_string(def.name));
+        args.put("typeDef", arg_string(field_type));
+        if !def.doc.is_empty() {
+            args.put("description", arg_string(def.doc));
+        }
+        if !def.deprecated.is_empty() {
+            args.put("deprecated", arg_string(def.deprecated));
+        }
+        if def.source.is_known() {
+            let source_map = build_source_map(transport, &def.source)?;
+            args.put("sourceMap", arg_string(source_map));
+        }
+        object = object.field("withField", args.finish());
+    }
+
     // One `withFunction` per declared function, chained. The response nests
     // exactly as the chain does, and `Chain::decode` walks it back the same
     // way, so repeating a field name costs nothing here.
@@ -797,6 +1120,17 @@ fn register<T: Object>(transport: &dyn Transport) -> Result<string, string> {
         let mut args = Args::new();
         args.put("function", arg_string(function_id));
         object = object.field("withFunction", args.finish());
+    }
+
+    // The constructor, if the object declared one. It is an ordinary `Function`
+    // — built by the same builder, with the same arguments and source map — hung
+    // off the type def by a field of its own rather than by name, which is why
+    // `build_function` is handed a `FunctionDef` whose name is empty.
+    if let Some(def) = T::constructor() {
+        let function_id = build_function(transport, def)?;
+        let mut args = Args::new();
+        args.put("function", arg_string(function_id));
+        object = object.field("withConstructor", args.finish());
     }
     let type_def_id = fetch_id(transport, &object)?;
 

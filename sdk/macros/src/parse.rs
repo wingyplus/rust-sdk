@@ -84,6 +84,33 @@ pub struct Param {
     pub source: SourceLoc,
 }
 
+/// One field of the `struct` `#[dagger::object]` was applied to.
+pub struct StructField {
+    pub name: String,
+    /// The type, rendered back to source text.
+    pub ty: String,
+    /// Joined `///` lines. Unlike a parameter, a field can carry them.
+    pub doc: String,
+    pub attrs: Vec<Attr>,
+    /// Whether the field was declared `pub`.
+    pub is_pub: bool,
+    /// Where the field's name was written.
+    pub source: SourceLoc,
+}
+
+/// The `struct` `#[dagger::object]` was applied to.
+///
+/// No doc comment and no source location, unlike [`ImplBlock`]: what the engine
+/// is told about the object itself — its description, and where it was written
+/// — comes from the `impl` block, which is the item that declares it. This half
+/// contributes only the fields.
+pub struct StructDef {
+    /// The type being declared.
+    pub type_name: String,
+    /// Its fields, in declaration order. Empty for a unit struct.
+    pub fields: Vec<StructField>,
+}
+
 /// The `impl` block `#[dagger::object]` was applied to.
 pub struct ImplBlock {
     /// The type the block implements, by its last path segment.
@@ -368,6 +395,128 @@ fn join_docs(attrs: &[Attr]) -> String {
         .join("\n")
 }
 
+/// The keyword that says what kind of item this is: `struct`, `impl`, `fn`.
+///
+/// Read past the attributes and the visibility, so `#[dagger::object] pub
+/// struct Build;` answers `struct`. Empty when the item begins with something
+/// else, which is what the caller reports as "not an item this macro applies
+/// to".
+pub fn item_keyword(item: &TokenStream) -> String {
+    let tokens: Vec<TokenTree> = item.clone().into_iter().collect();
+    let mut cursor = 0;
+    take_attrs(&tokens, &mut cursor);
+    skip_visibility(&tokens, &mut cursor);
+    match tokens.get(cursor) {
+        Some(TokenTree::Ident(id)) => id.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Advance past `pub`, `pub(crate)` and friends.
+fn skip_visibility(tokens: &[TokenTree], cursor: &mut usize) -> bool {
+    let is_pub = matches!(tokens.get(*cursor), Some(TokenTree::Ident(id)) if id.to_string() == "pub");
+    if !is_pub {
+        return false;
+    }
+    *cursor += 1;
+    if let Some(TokenTree::Group(g)) = tokens.get(*cursor) {
+        if g.delimiter() == Delimiter::Parenthesis {
+            *cursor += 1;
+        }
+    }
+    true
+}
+
+/// Parse the `struct` declaration `#[dagger::object]` was applied to.
+///
+/// Only the shapes an object's state can take: a unit struct, or one with named
+/// fields. A tuple struct has no field names to give the engine, and a generic
+/// one has no single type to register, so both are refused here rather than
+/// producing a `FieldDef` list that does not describe them.
+pub fn parse_struct(item: TokenStream) -> Result<StructDef, String> {
+    let tokens: Vec<TokenTree> = item.into_iter().collect();
+    let mut cursor = 0;
+
+    take_attrs(&tokens, &mut cursor);
+    skip_visibility(&tokens, &mut cursor);
+
+    match tokens.get(cursor) {
+        Some(TokenTree::Ident(id)) if id.to_string() == "struct" => cursor += 1,
+        _ => return Err("#[dagger::object] expects a `struct` or an `impl` block".to_string()),
+    }
+
+    let type_name = match tokens.get(cursor) {
+        Some(TokenTree::Ident(id)) => id.to_string(),
+        _ => return Err("expected a name after `struct`".to_string()),
+    };
+    cursor += 1;
+
+    let fields = match tokens.get(cursor) {
+        // `pub struct Build;` — no state at all.
+        None => Vec::new(),
+        Some(TokenTree::Punct(p)) if p.as_char() == ';' => Vec::new(),
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => {
+            parse_fields(g.stream())?
+        }
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
+            return Err(format!(
+                "`{type_name}` is a tuple struct; an object's fields are named to the engine, so give them names"
+            ))
+        }
+        Some(TokenTree::Punct(p)) if p.as_char() == '<' => {
+            return Err(format!(
+                "`{type_name}` is generic; a module registers one object of one name, so its type cannot have parameters"
+            ))
+        }
+        Some(other) => {
+            return Err(format!(
+                "could not read the body of `struct {type_name}`, at `{other}`"
+            ))
+        }
+    };
+
+    Ok(StructDef { type_name, fields })
+}
+
+/// Parse the named fields of a struct body.
+fn parse_fields(body: TokenStream) -> Result<Vec<StructField>, String> {
+    let tokens: Vec<TokenTree> = body.into_iter().collect();
+    let mut fields = Vec::new();
+
+    for part in split_commas(&tokens) {
+        let mut cursor = 0;
+        let attrs = take_attrs(&part, &mut cursor);
+        let doc = join_docs(&attrs);
+        let is_pub = skip_visibility(&part, &mut cursor);
+        let rest = &part[cursor..];
+        if rest.is_empty() {
+            continue;
+        }
+
+        let colon = rest
+            .iter()
+            .position(|t| matches!(t, TokenTree::Punct(p) if p.as_char() == ':'))
+            .ok_or_else(|| format!("field `{}` has no type", render(rest)))?;
+
+        let name = render(&rest[..colon]);
+        let ty = render(&rest[colon + 1..]);
+        if name.is_empty() || ty.is_empty() {
+            return Err(format!("could not read field `{}`", render(rest)));
+        }
+        let source = rest.first().map(SourceLoc::of).unwrap_or_else(SourceLoc::unknown);
+        fields.push(StructField {
+            name,
+            ty,
+            doc,
+            attrs,
+            is_pub,
+            source,
+        });
+    }
+
+    Ok(fields)
+}
+
 /// Parse the body of an `impl` block into the functions carrying any of
 /// `markers`, recording which ones each carried.
 ///
@@ -413,12 +562,56 @@ pub fn parse_impl(item: TokenStream, markers: &[&str]) -> Result<ImplBlock, Stri
         _ => return Err("`impl` block has no body".to_string()),
     };
 
+    // `Self` is spelled out before anything downstream looks at a type. A
+    // constructor returns `Self` and a builder takes and returns it, and every
+    // question asked of a type after this — which kind it is, whether it is the
+    // object's own — is asked of the name. Doing it here means it is done once,
+    // rather than at each of those questions.
+    let mut functions = parse_items(body, markers)?;
+    for f in &mut functions {
+        f.return_ty = replace_self(&f.return_ty, &type_name);
+        for param in &mut f.params {
+            param.ty = replace_self(&param.ty, &type_name);
+        }
+    }
+
     Ok(ImplBlock {
         type_name,
         doc,
         source,
-        functions: parse_items(body, markers)?,
+        functions,
     })
+}
+
+/// Rewrite the identifier `Self` in a rendered type as the type it stands for.
+///
+/// Whole identifiers only: `Self` is replaced, `SelfTest` and `gen::Self_` are
+/// not. What arrives here is already source text rather than tokens, so the
+/// word boundaries are the characters a Rust identifier cannot contain.
+fn replace_self(ty: &str, type_name: &str) -> String {
+    let mut out = String::with_capacity(ty.len());
+    let mut rest = ty;
+    while let Some(at) = rest.find("Self") {
+        let before = &rest[..at];
+        let after = &rest[at + 4..];
+        let joined_left = before
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let joined_right = after
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        out.push_str(before);
+        if joined_left || joined_right {
+            out.push_str("Self");
+        } else {
+            out.push_str(type_name);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Whether an attribute names a marker, as `#[marker]` or `#[path::marker]`.
