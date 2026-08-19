@@ -61,7 +61,7 @@ pub trait ObjectId: Sized {
 ///
 /// What a generator returns: `dagger generate` runs the function and applies
 /// the changeset to the workspace. Build one by asking the engine for it —
-/// [`crate::Session::query`], until the bindings can do it for you:
+/// [`crate::engine::Session::query`], until the bindings can do it for you:
 ///
 /// ```ignore
 /// let before = /* {loadWorkspaceFromID(id:…){directory(path:"/"){id}}} */;

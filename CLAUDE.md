@@ -253,6 +253,27 @@ caches hold source, not objects, and stay shared.
   — `ToArg`, `arg_string`, `Args`, `arg_list` — belongs there and not in the
   generated file. This is the same rule that keeps `Changeset`, `Workspace` and
   the query builder at the crate root, applied from the other side.
+- **What the macros expand into lives in `dagger::__private`, and moving a name
+  there is two edits.** `sdk/src/lib.rs` exports what a module *author* writes —
+  the five macros, `serve`, `fail`, `ObjectId`, `Changeset`, `Workspace`, and
+  the `gen`/`engine`/`querybuilder` modules — and nothing else. The rest of
+  `module.rs` (the `*Def` tables, `Arguments`, `State`, `StateWriter`, the
+  `encode_*` family, `from_ids`, `error_message`, `Object`, `ObjectState`,
+  `EnumType`) is reachable only through the `#[doc(hidden)] pub mod __private`,
+  because a macro emits code into the *user's* crate and everything that code
+  names has to be spellable as `dagger::…`. `module` itself is a private module.
+  Renaming anything under `__private` means editing the emitter in
+  `sdk/macros/src/lib.rs` in the same commit; a mismatch compiles here and fails
+  inside somebody's module. `querybuilder` and `engine` stay *public* modules
+  rather than hidden ones for the reason above: the generated bindings put
+  `Transport`, `ToArg` and `FromJson` in public signatures, so they have to be
+  publicly nameable.
+- **A public module's docs go in its own `//!`, never on the `mod` item.**
+  rustdoc merges an outer `///` on `pub mod engine;` with `engine.rs`'s `//!`
+  header and resolves the merged links in the scope of the *first* fragment —
+  the crate root. So an outer doc in `lib.rs` breaks every intra-doc link the
+  module's own header makes to its own items. `cargo doc --no-deps` in `sdk/` is
+  warning-free; keep it that way.
 - **`fmt::Sprintf!` does not check its arguments.** It is a `macro_rules!` that
   hands the format string to `sprintf_impl` at run time, so a `%s` without an
   argument is not a compile error — Go's formatter writes `%!s(MISSING)` into

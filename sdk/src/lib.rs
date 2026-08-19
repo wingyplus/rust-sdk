@@ -33,8 +33,8 @@
 //!
 //! The root object carries state. `#[dagger::object]` goes on the `struct` as
 //! well as on the `impl`: on the `struct` it reads the `pub` fields and emits
-//! [`ObjectState`], which encodes them into the document the engine keeps and
-//! decodes them back into the receiver on the next call. A
+//! the `ObjectState` half, which encodes them into the document the engine
+//! keeps and decodes them back into the receiver on the next call. A
 //! `#[dagger::constructor]` configures the object once — its arguments are the
 //! module's own flags — and a function returning `Self` hands back a
 //! reconfigured one, so `dagger call --image=alpine with-tag --tag=v1 publish`
@@ -45,8 +45,8 @@
 //! own schema and is a full typed client: `dag().container()
 //! .from("alpine").with_exec(&["echo", "hi"]).stdout()?` reaches a live engine.
 //! `dag()` takes no argument because it opens the session the engine put in
-//! this process's environment — see [`default_transport`] — so a module's
-//! function can reach the API without being handed anything.
+//! this process's environment — see [`engine::default_transport`] — so a
+//! module's function can reach the API without being handed anything.
 //!
 //! The two meet at [`ObjectId`], which every generated object with a loader
 //! implements: a function may take a `Directory` and return a `Container`, and
@@ -63,14 +63,12 @@
 //! A signature may be list-typed too: a `slice<T>` argument arrives as a JSON
 //! array — of scalars, or of the IDs a `slice<Directory>` is rebuilt from — and
 //! a returned one is encoded the same way. One level deep, and an `Option`
-//! wraps the list rather than its elements; see [`module`].
+//! wraps the list rather than its elements.
 //!
 //! What is still missing is the way back *in*: an argument of a client method
 //! that the schema types as `DirectoryID` is a `string` here, so handing an
 //! object to one goes through [`ObjectId::to_id`] rather than passing the
 //! object itself. See the repository README.
-//!
-//! Hello
 
 #![no_std]
 
@@ -79,72 +77,53 @@
 // `alloc::sync::Arc<dyn Transport>`.
 extern crate alloc;
 
-/// API bindings generated from the module's schema.
-///
-/// The checked-in contents are a placeholder; `dagger generate` replaces this
-/// whole module with bindings derived from the engine's introspection schema.
-pub mod gen;
-
-/// Talking to the Dagger Engine: the session, and sending a selection over it.
+// The three public modules carry their own `//!` docs. An outer `///` here as
+// well would be merged in front of them, and rustdoc resolves a merged doc's
+// links in the scope of its *first* fragment — the crate root — so every link
+// an inner doc makes to its own module's items would break.
 pub mod engine;
-
-/// What this module declares, and how an incoming call reaches it.
-pub mod module;
-
-/// Multi-field selection: the query language the other two exchange.
-///
-/// Belongs to neither side — [`engine`] carries what it builds, [`gen`] is
-/// written against it, and it depends on neither. Unlike [`gen`] it is
-/// hand-written and stays put; see the module docs.
+pub mod gen;
 pub mod querybuilder;
 
+mod module;
 mod objects;
 
-pub use engine::{
-    default_transport, fetch, field, field_string, Session, Transport, SESSION_PORT_ENV,
-    SESSION_TOKEN_ENV,
-};
-pub use module::{
-    encode_bool, encode_bool_list, encode_enum, encode_float, encode_float_list, encode_int,
-    encode_int_list, encode_null, encode_object, encode_object_list, encode_state, encode_string,
-    encode_string_list, encode_void, error_message, from_ids, serve, ArgDef, Arguments, EnumDef,
-    EnumMemberDef, EnumType, FieldDef, FunctionDef, Object, ObjectState, SourceMapDef, State,
-    StateWriter,
-};
+pub use module::serve;
 pub use objects::{Changeset, ObjectId, Workspace};
-pub use querybuilder::{
-    arg_list, arg_string, Args, Chain, Field, Fields, FromJson, Leaf, ListField, OptField, Sel, Sub,
-    SubList, SubOpt, ToArg,
-};
 
 /// Declare a module's root object, its state, its enums, and the functions it
 /// serves.
 pub use dagger_macros::{check, constructor, enum_type, function, object};
 
-use goish::encoding::json;
-use goish::{bytes, nil, os, string};
-
-/// Render a Rust-side string as a quoted, escaped literal.
-///
-/// Used for both the GraphQL arguments and the JSON request body, which share
-/// escaping rules. Going through `json::Marshal` rather than hand-rolling the
-/// escapes keeps module IDs — opaque, engine-chosen text — safe to embed. It is
-/// public for the same reason [`field`] is: a query written by hand has to
-/// quote its arguments, and this is what the rest of the crate quotes with.
-pub fn json_string(value: &string) -> string {
-    let (encoded, err) = json::Marshal(&json::Value::String(value.clone()));
-    if err != nil {
-        fail(string("encoding a query argument: ") + err.Error());
-    }
-    string(encoded)
-}
+use goish::{bytes, os, string};
 
 /// Write a message to stderr and exit non-zero.
 ///
 /// The engine surfaces a module's stderr, so this is what a user sees when a
-/// module fails to serve.
+/// module fails to serve. It is also how a module gives up inside a function:
+/// every generated client method is fallible, and
+/// `unwrap_or_else(|m| dagger::fail(m))` is the spelling for a failure the
+/// function has no better answer to than stopping.
 pub fn fail(message: string) -> ! {
     let stderr = os::Stderr();
     let _ = stderr.Write(bytes(string("dagger: ") + message + "\n"));
     os::Exit(2)
+}
+
+/// What the attribute macros expand into. Not a public API.
+///
+/// `#[dagger::object]` and its companions emit code into the *user's* crate, so
+/// everything that code names has to be reachable as `dagger::…` even though a
+/// module never writes any of it by hand. Keeping it behind one hidden module
+/// says which half of the crate that is: what a module author writes is the
+/// short list above, and anything here can change with the macro that emits it.
+#[doc(hidden)]
+pub mod __private {
+    pub use crate::module::{
+        encode_bool, encode_bool_list, encode_enum, encode_float, encode_float_list, encode_int,
+        encode_int_list, encode_null, encode_object, encode_object_list, encode_state,
+        encode_string, encode_string_list, encode_void, error_message, from_ids, ArgDef, Arguments,
+        EnumDef, EnumMemberDef, EnumType, FieldDef, FunctionDef, Object, ObjectState, SourceMapDef,
+        State, StateWriter,
+    };
 }

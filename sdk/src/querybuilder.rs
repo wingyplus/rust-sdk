@@ -97,7 +97,7 @@
 use core::marker::PhantomData;
 
 use goish::encoding::json;
-use goish::{append, float64, int, make, slice, strconv, string};
+use goish::{append, float64, int, make, nil, slice, strconv, string};
 
 /// One node of a selection.
 ///
@@ -543,6 +543,22 @@ impl<T: FromJson> FromJson for slice<T> {
 
 // ─── argument encoding ────────────────────────────────────────────────
 
+/// Render a Rust-side string as a quoted, escaped literal.
+///
+/// Used for both the GraphQL arguments rendered here and the JSON request body
+/// [`crate::engine`] wraps them in, which share escaping rules. Going through
+/// `json::Marshal` rather than hand-rolling the escapes keeps module IDs —
+/// opaque, engine-chosen text — safe to embed. It is public for the same reason
+/// [`crate::engine::field`] is: a query written by hand has to quote its
+/// arguments, and this is what the rest of the crate quotes with.
+pub fn json_string(value: &string) -> string {
+    let (encoded, err) = json::Marshal(&json::Value::String(value.clone()));
+    if err != nil {
+        crate::fail(string("encoding a query argument: ") + err.Error());
+    }
+    string(encoded)
+}
+
 /// How a Rust value becomes the text of one GraphQL argument.
 ///
 /// The counterpart to [`FromJson`], for the direction that leaves: a leaf
@@ -552,7 +568,7 @@ impl<T: FromJson> FromJson for slice<T> {
 /// scalars land on.
 ///
 /// The rendered text is spliced straight into a query, so an implementor is
-/// responsible for its own quoting — [`crate::json_string`] for anything
+/// responsible for its own quoting — [`json_string`] for anything
 /// string-shaped, nothing for a GraphQL enum literal, which is a bare name.
 pub trait ToArg {
     /// This value as GraphQL argument text.
@@ -561,13 +577,13 @@ pub trait ToArg {
 
 impl ToArg for string {
     fn to_arg(&self) -> string {
-        crate::json_string(self)
+        json_string(self)
     }
 }
 
 impl ToArg for str {
     fn to_arg(&self) -> string {
-        crate::json_string(&string::from(self))
+        json_string(&string::from(self))
     }
 }
 
@@ -611,7 +627,7 @@ impl<T: ToArg + ?Sized> ToArg for &T {
 /// [`ToArg`] impls cannot, since a bare `.into()` at the call site would have
 /// nothing to infer its target from.
 pub fn arg_string(value: impl Into<string>) -> string {
-    crate::json_string(&value.into())
+    json_string(&value.into())
 }
 
 /// An argument list under construction.

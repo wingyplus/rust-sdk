@@ -6,7 +6,7 @@ API bindings.
 ```text
 .
 ├── Cargo.toml          the `dagger` crate — no_std, depends on goish
-├── src/lib.rs          session parameters and the module entrypoint
+├── src/lib.rs          the public surface: five macros, `serve`, `fail`, three modules
 ├── src/engine.rs       the session, and sending a selection over it
 ├── src/module.rs       what a module declares, and how a call reaches it
 ├── src/querybuilder.rs building a selection and decoding it; NOT under src/gen
@@ -28,6 +28,39 @@ rather than directly in `release/` — `mod.dang` accounts for that when it copi
 the binary out. goish is its only dependency, so `dagger generate` needs no
 crates.io access beyond the toolchain image, and it parses the introspection
 schema with goish's `encoding/json` rather than serde.
+
+## The public surface
+
+What a module author writes is short, and `src/lib.rs` is arranged so that it
+stays that way:
+
+| Reached as | What it is |
+| --- | --- |
+| `dagger::{object, function, constructor, check, enum_type}` | the attribute macros |
+| `dagger::serve` | a module's whole `main` |
+| `dagger::fail` | stderr and a non-zero exit; `unwrap_or_else(\|m\| dagger::fail(m))` |
+| `dagger::{ObjectId, Changeset, Workspace}` | crossing the boundary, and the two hand-written objects |
+| `dagger::gen` | the generated client — `dag()` and everything under it |
+| `dagger::engine` | `Transport` for `dag_with`, `Session` for a query written by hand |
+| `dagger::querybuilder` | what the generated bindings are written against |
+| `dagger::__private` | `#[doc(hidden)]` — what the macros expand into |
+
+`src/module.rs` is private. Its `serve` is re-exported at the root and the rest
+of it — the `*Def` tables, `Arguments`, `State`, the `encode_*` family,
+`from_ids`, `error_message`, and the `Object`/`ObjectState`/`EnumType` traits —
+is reachable only through `__private`, because the macros emit code into the
+*user's* crate and everything that code names has to be spellable as
+`dagger::…`. Being reachable is not the same as being API: nothing in
+`__private` is documented, and it changes with the macro that emits it. If you
+change a name there, change the emitter in `macros/src/lib.rs` in the same
+commit — a mismatch is an error inside somebody's module, not here.
+
+Two rules keep it from drifting back. Anything the *generated* bindings name has
+to live outside `src/gen`, which is why `querybuilder` and `engine` are public
+modules rather than root re-exports. And a public module carries its own `//!`
+docs with no `///` on the `mod` item in `lib.rs`: rustdoc merges the two and
+resolves the merged links in the scope of the *first* fragment, so an outer doc
+in `lib.rs` breaks every link the module's own header makes to its own items.
 
 ## Working on it standalone
 
