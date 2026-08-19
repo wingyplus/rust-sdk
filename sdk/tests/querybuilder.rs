@@ -23,7 +23,7 @@
 
 use core::cell::RefCell;
 
-use dagger::__private::{Arguments, EnumType, Object};
+use dagger::__internal::{Arguments, EnumType, Object};
 use dagger::engine::Transport;
 use dagger::querybuilder::{json_string, Chain, Field, Fields, Leaf, ListField, OptField, Sel};
 use goish::encoding::json;
@@ -786,7 +786,7 @@ fn TestEnumMembersRoundTripThroughTheirNames(t: &mut testing::T) {
         Err(why) => t.Fatal(fmt::Sprintf!("from_member: %s", why)),
     };
     assert_string(t, "the member", string(os.member()), "Debian");
-    assert_string(t, "the encoded member", dagger::__private::encode_enum(&os), "\"Debian\"");
+    assert_string(t, "the encoded member", dagger::__internal::encode_enum(&os), "\"Debian\"");
 
     // The engine's own spelling of the member — what a caller writes — is not
     // what a module deals in, and reading one back would be accepting a name
@@ -913,7 +913,7 @@ fn TestDispatchTurnsAMemberNameIntoAVariant(t: &mut testing::T) {
 /// The one encoder in this suite: the rest of the dispatch is what
 /// `#[dagger::object]` emits, and `sdk/macros`'s own tests assert on that text.
 fn TestNullEncodesTheWayAnAbsentArgumentArrives(t: &mut testing::T) {
-    let encoded = dagger::__private::encode_null();
+    let encoded = dagger::__internal::encode_null();
     assert_string(t, "encode_null", encoded.clone(), "null");
 
     // Decoded rather than only compared, so the assertion is that those
@@ -931,7 +931,7 @@ fn TestNullEncodesTheWayAnAbsentArgumentArrives(t: &mut testing::T) {
 
     // And back in through the argument side, which is where the engine's own
     // `null` lands: the same text a module writes for `None` reads back as one.
-    let args = dagger::__private::Arguments::new(slice!([](string, string) {
+    let args = dagger::__internal::Arguments::new(slice!([](string, string) {
         (string("maybe"), encoded)
     }));
     match args.string_opt("maybe") {

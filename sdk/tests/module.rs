@@ -21,7 +21,7 @@
 #![no_main]
 #![allow(non_snake_case)]
 
-use dagger::__private::{
+use dagger::__internal::{
     encode_bool_list, encode_float_list, encode_int_list, encode_object_list, encode_string_list,
     from_ids, Arguments,
 };

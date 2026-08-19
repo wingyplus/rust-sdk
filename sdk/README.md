@@ -43,15 +43,15 @@ stays that way:
 | `dagger::gen` | the generated client — `dag()` and everything under it |
 | `dagger::engine` | `Transport` for `dag_with`, `Session` for a query written by hand |
 | `dagger::querybuilder` | what the generated bindings are written against |
-| `dagger::__private` | `#[doc(hidden)]` — what the macros expand into |
+| `dagger::__internal` | `#[doc(hidden)]` — what the macros expand into |
 
 `src/module.rs` is private. Its `serve` is re-exported at the root and the rest
 of it — the `*Def` tables, `Arguments`, `State`, the `encode_*` family,
 `from_ids`, `error_message`, and the `Object`/`ObjectState`/`EnumType` traits —
-is reachable only through `__private`, because the macros emit code into the
+is reachable only through `__internal`, because the macros emit code into the
 *user's* crate and everything that code names has to be spellable as
 `dagger::…`. Being reachable is not the same as being API: nothing in
-`__private` is documented, and it changes with the macro that emits it. If you
+`__internal` is documented, and it changes with the macro that emits it. If you
 change a name there, change the emitter in `macros/src/lib.rs` in the same
 commit — a mismatch is an error inside somebody's module, not here.
 

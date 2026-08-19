@@ -118,7 +118,7 @@ pub fn fail(message: string) -> ! {
 /// says which half of the crate that is: what a module author writes is the
 /// short list above, and anything here can change with the macro that emits it.
 #[doc(hidden)]
-pub mod __private {
+pub mod __internal {
     pub use crate::module::{
         encode_bool, encode_bool_list, encode_enum, encode_float, encode_float_list, encode_int,
         encode_int_list, encode_null, encode_object, encode_object_list, encode_state,
