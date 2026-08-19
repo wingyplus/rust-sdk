@@ -23,7 +23,8 @@
 #![no_main]
 #![allow(non_snake_case)]
 
-use dagger::{Arguments, Object, ObjectId, ObjectState, State, Workspace};
+use dagger::__internal::{Arguments, Object, ObjectState, State};
+use dagger::{ObjectId, Workspace};
 use goish::{fmt, int, make, os, slice, string, strings, testing};
 
 // ─── the object under test ────────────────────────────────────────────

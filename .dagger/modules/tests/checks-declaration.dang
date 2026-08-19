@@ -200,7 +200,7 @@ type DeclarationChecks {
   The two are not interchangeable and both have to work: a client method fails
   with the message itself, and goish's own APIs fail with an `error`, so which
   one a function returns follows from whose work it is doing. The dispatch reads
-  the message off an `error` through `dagger::error_message` rather than through
+  the message off an `error` through `error_message` rather than through
   `Error()`, which panics on the nil error — a module that returned `Err(nil)`
   gets a vague failure rather than a panic, and either way the caller reads one
   message on stderr.

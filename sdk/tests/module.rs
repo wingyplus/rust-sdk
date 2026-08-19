@@ -21,10 +21,11 @@
 #![no_main]
 #![allow(non_snake_case)]
 
-use dagger::{
+use dagger::__internal::{
     encode_bool_list, encode_float_list, encode_int_list, encode_object_list, encode_string_list,
-    from_ids, Arguments, Changeset, ObjectId,
+    from_ids, Arguments,
 };
+use dagger::{Changeset, ObjectId};
 use goish::{append, float64, fmt, int, make, os, slice, string, testing};
 
 /// The arguments of a call, as the engine hands them over: a name, and the

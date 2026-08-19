@@ -624,7 +624,7 @@ fn enum_impl(declared: &parse::Enum) -> String {
     let mut reads = String::new();
     for variant in &declared.variants {
         members.push_str(&format!(
-            "::dagger::EnumMemberDef {{ name: {name}, doc: {doc} }},",
+            "::dagger::__internal::EnumMemberDef {{ name: {name}, doc: {doc} }},",
             name = quote_str(&variant.name),
             doc = quote_str(&variant.doc),
         ));
@@ -647,8 +647,8 @@ fn enum_impl(declared: &parse::Enum) -> String {
 
     format!(
         r#"
-impl ::dagger::EnumType for {ty} {{
-    const DEF: ::dagger::EnumDef = ::dagger::EnumDef {{
+impl ::dagger::__internal::EnumType for {ty} {{
+    const DEF: ::dagger::__internal::EnumDef = ::dagger::__internal::EnumDef {{
         name: {name},
         doc: {doc},
         members: &[{members}],
@@ -1335,7 +1335,7 @@ fn state_impl(def: &parse::StructDef, enums: &Enums) -> Result<String, String> {
         let api_name = camel_case(&field.name);
 
         defs.push_str(&format!(
-            "::dagger::FieldDef {{ name: {name}, kind: {kind}, type_name: {type_of}, list: {list}, optional: {optional}, doc: {doc}, deprecated: {deprecated}, source: {source} }},",
+            "::dagger::__internal::FieldDef {{ name: {name}, kind: {kind}, type_name: {type_of}, list: {list}, optional: {optional}, doc: {doc}, deprecated: {deprecated}, source: {source} }},",
             name = quote_str(&api_name),
             kind = quote_str(kind.kind),
             type_of = quote_str(&kind.type_name),
@@ -1365,22 +1365,22 @@ fn state_impl(def: &parse::StructDef, enums: &Enums) -> Result<String, String> {
     // in the user's build rather than here.
     Ok(format!(
         r#"
-impl ::dagger::ObjectState for {type_name} {{
-    fn fields() -> &'static [::dagger::FieldDef] {{
-        const FIELDS: &[::dagger::FieldDef] = &[{defs}];
+impl ::dagger::__internal::ObjectState for {type_name} {{
+    fn fields() -> &'static [::dagger::__internal::FieldDef] {{
+        const FIELDS: &[::dagger::__internal::FieldDef] = &[{defs}];
         FIELDS
     }}
 
     #[allow(unused_variables)]
     fn from_state(
-        state: &::dagger::State,
+        state: &::dagger::__internal::State,
     ) -> ::core::result::Result<{type_name}, ::goish::gostring::string> {{
         ::core::result::Result::Ok({type_name} {{ {reads} }})
     }}
 
     #[allow(unused_mut)]
     fn to_state(&self) -> ::core::result::Result<::goish::gostring::string, ::goish::gostring::string> {{
-        let mut __state = ::dagger::StateWriter::new();
+        let mut __state = ::dagger::__internal::StateWriter::new();
         {writes}
         ::core::result::Result::Ok(__state.finish())
     }}
@@ -1434,15 +1434,15 @@ fn object_impl(block: &parse::ImplBlock, enums: &Enums) -> Result<String, String
 
     Ok(format!(
         r#"
-impl ::dagger::Object for {type_name} {{
+impl ::dagger::__internal::Object for {type_name} {{
     const NAME: &'static str = {name_literal};
 
     const DOC: &'static str = {doc_literal};
 
-    const SOURCE: ::dagger::SourceMapDef = {source};
+    const SOURCE: ::dagger::__internal::SourceMapDef = {source};
 
-    fn functions() -> &'static [::dagger::FunctionDef] {{
-        const FUNCTIONS: &[::dagger::FunctionDef] = &[{defs}];
+    fn functions() -> &'static [::dagger::__internal::FunctionDef] {{
+        const FUNCTIONS: &[::dagger::__internal::FunctionDef] = &[{defs}];
         FUNCTIONS
     }}
 {enum_defs}{constructor}
@@ -1450,7 +1450,7 @@ impl ::dagger::Object for {type_name} {{
     fn invoke(
         self,
         name: &::goish::gostring::string,
-        args: &::dagger::Arguments,
+        args: &::dagger::__internal::Arguments,
     ) -> ::core::result::Result<::goish::gostring::string, ::goish::gostring::string> {{
         {arms}
         ::core::result::Result::Err(
@@ -1506,17 +1506,17 @@ fn constructor_impl(type_name: &str, f: &Function, enums: &Enums) -> Result<Stri
 
     Ok(format!(
         r#"
-    fn constructor() -> ::core::option::Option<&'static ::dagger::FunctionDef> {{
-        const CONSTRUCTOR: ::dagger::FunctionDef = {def}
+    fn constructor() -> ::core::option::Option<&'static ::dagger::__internal::FunctionDef> {{
+        const CONSTRUCTOR: ::dagger::__internal::FunctionDef = {def}
         ::core::option::Option::Some(&CONSTRUCTOR)
     }}
 
     #[allow(unused_variables)]
     fn construct(
-        args: &::dagger::Arguments,
+        args: &::dagger::__internal::Arguments,
     ) -> ::core::result::Result<::goish::gostring::string, ::goish::gostring::string> {{
         {bindings}
-        ::dagger::ObjectState::to_state(&{call})
+        ::dagger::__internal::ObjectState::to_state(&{call})
     }}
 "#,
         // The rendered def ends in a trailing comma, which is what a table
@@ -1535,10 +1535,10 @@ fn constructor_impl(type_name: &str, f: &Function, enums: &Enums) -> Result<Stri
 /// zero" without inspecting the numbers.
 fn source_map_def(loc: &SourceLoc) -> String {
     if loc.file.is_empty() {
-        return "::dagger::SourceMapDef::UNKNOWN".to_string();
+        return "::dagger::__internal::SourceMapDef::UNKNOWN".to_string();
     }
     format!(
-        "::dagger::SourceMapDef {{ file: {file}, line: {line}, column: {column} }}",
+        "::dagger::__internal::SourceMapDef {{ file: {file}, line: {line}, column: {column} }}",
         file = quote_str(&loc.file),
         line = loc.line,
         column = loc.column,
@@ -1559,12 +1559,12 @@ fn enum_defs(enums: &Enums) -> String {
     let listed = enums
         .paths
         .iter()
-        .map(|path| format!("<{path} as ::dagger::EnumType>::DEF,"))
+        .map(|path| format!("<{path} as ::dagger::__internal::EnumType>::DEF,"))
         .collect::<String>();
     format!(
         r#"
-    fn enums() -> &'static [::dagger::EnumDef] {{
-        const ENUMS: &[::dagger::EnumDef] = &[{listed}];
+    fn enums() -> &'static [::dagger::__internal::EnumDef] {{
+        const ENUMS: &[::dagger::__internal::EnumDef] = &[{listed}];
         ENUMS
     }}
 "#
@@ -1679,7 +1679,7 @@ fn function_def_named(
             .join(", ");
 
         args.push_str(&format!(
-            "::dagger::ArgDef {{ name: {name}, kind: {kind}, type_name: {type_name}, list: {list}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated}, source: {source} }},",
+            "::dagger::__internal::ArgDef {{ name: {name}, kind: {kind}, type_name: {type_name}, list: {list}, optional: {optional}, doc: {doc}, default_value: {default}, default_path: {path}, ignore: &[{ignore}], deprecated: {deprecated}, source: {source} }},",
             name = quote_str(&camel_case(&param.name)),
             kind = quote_str(kind.kind),
             type_name = quote_str(&kind.type_name),
@@ -1711,7 +1711,7 @@ fn function_def_named(
     }
 
     Ok(format!(
-        "::dagger::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_type_name: {ret_type_name}, return_list: {ret_list}, return_optional: {ret_optional}, is_check: {is_check}, generator: {generator}, deprecated: {deprecated}, source: {source}, args: &[{args}] }},",
+        "::dagger::__internal::FunctionDef {{ name: {name}, doc: {doc}, return_kind: {ret}, return_type_name: {ret_type_name}, return_list: {ret_list}, return_optional: {ret_optional}, is_check: {is_check}, generator: {generator}, deprecated: {deprecated}, source: {source}, args: &[{args}] }},",
         name = quote_str(api_name),
         doc = quote_str(&f.doc),
         ret = quote_str(ret.kind),
@@ -1758,7 +1758,7 @@ fn read_value(carrier: &str, api_name: &str, ty: &str, kind: &Kind) -> String {
             // and takes a turbofish; the trait method cannot, so it stays
             // qualified.
             let rebuild = match unwrap_list(ty) {
-                Some(element) => format!("::dagger::from_ids::<{element}>"),
+                Some(element) => format!("::dagger::__internal::from_ids::<{element}>"),
                 None => format!("<{ty} as ::dagger::ObjectId>::from_id"),
             };
             if kind.optional {
@@ -1771,7 +1771,7 @@ fn read_value(carrier: &str, api_name: &str, ty: &str, kind: &Kind) -> String {
         // cannot be a `map`: that would leave a `Result` inside the `Option` for
         // the function to receive.
         "ENUM_KIND" => {
-            let from_member = format!("<{ty} as ::dagger::EnumType>::from_member");
+            let from_member = format!("<{ty} as ::dagger::__internal::EnumType>::from_member");
             if kind.optional {
                 format!(
                     "match {read} {{ ::core::option::Option::Some(member) => ::core::option::Option::Some({from_member}(&member)?), ::core::option::Option::None => ::core::option::Option::None }}"
@@ -1806,16 +1806,16 @@ fn write_value(name: &str, kind: &Kind) -> Result<String, String> {
     }
 
     let (encoder, borrow, deref, question) = match kind.kind {
-        "STRING_KIND" => ("::dagger::encode_string", "&", "", ""),
-        "INTEGER_KIND" => ("::dagger::encode_int", "", "*", ""),
-        "FLOAT_KIND" => ("::dagger::encode_float", "", "*", ""),
-        "BOOLEAN_KIND" => ("::dagger::encode_bool", "", "*", ""),
+        "STRING_KIND" => ("::dagger::__internal::encode_string", "&", "", ""),
+        "INTEGER_KIND" => ("::dagger::__internal::encode_int", "", "*", ""),
+        "FLOAT_KIND" => ("::dagger::__internal::encode_float", "", "*", ""),
+        "BOOLEAN_KIND" => ("::dagger::__internal::encode_bool", "", "*", ""),
         // Fallible, unlike the others: reading a generated object's id runs the
         // chain it was built from.
-        "OBJECT_KIND" => ("::dagger::encode_object", "&", "", "?"),
+        "OBJECT_KIND" => ("::dagger::__internal::encode_object", "&", "", "?"),
         // An enum goes back as the member's name, which the value already
         // carries — nothing to fetch, so nothing to fail.
-        "ENUM_KIND" => ("::dagger::encode_enum", "&", "", ""),
+        "ENUM_KIND" => ("::dagger::__internal::encode_enum", "&", "", ""),
         other => return Err(format!("cannot encode a field of kind {other}")),
     };
     Ok(if kind.optional {
@@ -1828,7 +1828,7 @@ fn write_value(name: &str, kind: &Kind) -> Result<String, String> {
 /// Wrap a field's encoder in the match an `Option` needs.
 fn optional_write(name: &str, encode: &str) -> String {
     format!(
-        "match &self.{name} {{ ::core::option::Option::Some(value) => {encode}, ::core::option::Option::None => ::dagger::encode_null() }}"
+        "match &self.{name} {{ ::core::option::Option::Some(value) => {encode}, ::core::option::Option::None => ::dagger::__internal::encode_null() }}"
     )
 }
 
@@ -1859,7 +1859,7 @@ fn wrap_failure(call: String, failure: &Failure) -> String {
     match failure {
         Failure::None => call,
         Failure::Message => format!("({call})?"),
-        Failure::GoError => format!("({call}).map_err(::dagger::error_message)?"),
+        Failure::GoError => format!("({call}).map_err(::dagger::__internal::error_message)?"),
     }
 }
 
@@ -1872,11 +1872,11 @@ fn wrap_failure(call: String, failure: &Failure) -> String {
 /// once per element.
 fn list_encoder(kind: &str, call: &str) -> Result<String, String> {
     Ok(match kind {
-        "STRING_KIND" => format!("::dagger::encode_string_list(&{call})"),
-        "INTEGER_KIND" => format!("::dagger::encode_int_list(&{call})"),
-        "FLOAT_KIND" => format!("::dagger::encode_float_list(&{call})"),
-        "BOOLEAN_KIND" => format!("::dagger::encode_bool_list(&{call})"),
-        "OBJECT_KIND" => format!("::dagger::encode_object_list(&{call})?"),
+        "STRING_KIND" => format!("::dagger::__internal::encode_string_list(&{call})"),
+        "INTEGER_KIND" => format!("::dagger::__internal::encode_int_list(&{call})"),
+        "FLOAT_KIND" => format!("::dagger::__internal::encode_float_list(&{call})"),
+        "BOOLEAN_KIND" => format!("::dagger::__internal::encode_bool_list(&{call})"),
+        "OBJECT_KIND" => format!("::dagger::__internal::encode_object_list(&{call})?"),
         other => return Err(format!("cannot encode a returned list of kind {other}")),
     })
 }
@@ -1921,28 +1921,28 @@ fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, 
             list_encoder(ret.kind, "__value")?
         } else {
             match ret.kind {
-                "STRING_KIND" => "::dagger::encode_string(&__value)".to_string(),
-                "INTEGER_KIND" => "::dagger::encode_int(__value)".to_string(),
-                "FLOAT_KIND" => "::dagger::encode_float(__value)".to_string(),
-                "BOOLEAN_KIND" => "::dagger::encode_bool(__value)".to_string(),
+                "STRING_KIND" => "::dagger::__internal::encode_string(&__value)".to_string(),
+                "INTEGER_KIND" => "::dagger::__internal::encode_int(__value)".to_string(),
+                "FLOAT_KIND" => "::dagger::__internal::encode_float(__value)".to_string(),
+                "BOOLEAN_KIND" => "::dagger::__internal::encode_bool(__value)".to_string(),
                 // The object's own type goes back as its state here too: the
                 // two halves of an `Option<Self>` are the same two answers as
                 // any other optional return, and only the `Some` one has a
                 // document to write.
                 "OBJECT_KIND" if ret.is_object(type_name) => {
-                    "::dagger::encode_state(&__value)?".to_string()
+                    "::dagger::__internal::encode_state(&__value)?".to_string()
                 }
-                "OBJECT_KIND" => "::dagger::encode_object(&__value)?".to_string(),
+                "OBJECT_KIND" => "::dagger::__internal::encode_object(&__value)?".to_string(),
                 // The member's name is already in the value, so nothing is
                 // fetched and nothing can fail — the `Some` arm needs no `?`.
-                "ENUM_KIND" => "::dagger::encode_enum(&__value)".to_string(),
+                "ENUM_KIND" => "::dagger::__internal::encode_enum(&__value)".to_string(),
                 other => {
                     return Err(format!("cannot encode an optional return of kind {other}"))
                 }
             }
         };
         format!(
-            "match {call} {{ ::core::option::Option::Some(__value) => {some}, ::core::option::Option::None => ::dagger::encode_null() }}"
+            "match {call} {{ ::core::option::Option::Some(__value) => {some}, ::core::option::Option::None => ::dagger::__internal::encode_null() }}"
         )
     } else {
         match ret.kind {
@@ -1950,24 +1950,24 @@ fn dispatch_arm(type_name: &str, f: &Function, enums: &Enums) -> Result<String, 
             // is a guard in front of the scalar arms rather than four more of
             // them.
             _ if ret.list => list_encoder(ret.kind, &call)?,
-            "VOID_KIND" => format!("{{ {call}; ::dagger::encode_void() }}"),
-            "STRING_KIND" => format!("::dagger::encode_string(&{call})"),
-            "INTEGER_KIND" => format!("::dagger::encode_int({call})"),
-            "FLOAT_KIND" => format!("::dagger::encode_float({call})"),
-            "BOOLEAN_KIND" => format!("::dagger::encode_bool({call})"),
+            "VOID_KIND" => format!("{{ {call}; ::dagger::__internal::encode_void() }}"),
+            "STRING_KIND" => format!("::dagger::__internal::encode_string(&{call})"),
+            "INTEGER_KIND" => format!("::dagger::__internal::encode_int({call})"),
+            "FLOAT_KIND" => format!("::dagger::__internal::encode_float({call})"),
+            "BOOLEAN_KIND" => format!("::dagger::__internal::encode_bool({call})"),
             // The object's own type goes back as its state rather than as an
             // id: the engine holds no value to mint one for, so what it keeps
             // is the document the fields encode to. This is what lets a builder
             // return `Self` and the caller go on chaining from it.
             "OBJECT_KIND" if ret.is_object(type_name) => {
-                format!("::dagger::encode_state(&{call})?")
+                format!("::dagger::__internal::encode_state(&{call})?")
             }
             // Fallible, unlike the others: reading a generated object's id runs
             // the chain the function built.
-            "OBJECT_KIND" => format!("::dagger::encode_object(&{call})?"),
+            "OBJECT_KIND" => format!("::dagger::__internal::encode_object(&{call})?"),
             // An enum goes back as the member's name, which the value already
             // carries — nothing to fetch, so nothing to fail.
-            "ENUM_KIND" => format!("::dagger::encode_enum(&{call})"),
+            "ENUM_KIND" => format!("::dagger::__internal::encode_enum(&{call})"),
             other => return Err(format!("cannot encode a return of kind {other}")),
         }
     };

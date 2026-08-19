@@ -12,8 +12,7 @@ use goish::encoding::json;
 use goish::net::http;
 use goish::{bytes, io, nil, os, string};
 
-use crate::json_string;
-use crate::querybuilder::{Chain, Sel};
+use crate::querybuilder::{json_string, Chain, Sel};
 
 /// Environment variable naming the port the engine session listens on.
 pub const SESSION_PORT_ENV: &str = "DAGGER_SESSION_PORT";
@@ -66,7 +65,7 @@ impl Session {
     ///
     /// Errors come back as a message rather than a goish `error` so every
     /// failure — transport, HTTP status, malformed body, GraphQL `errors` —
-    /// reaches [`fail`] with the same shape.
+    /// reaches [`crate::fail`] with the same shape.
     pub fn query(&self, query: &string) -> Result<json::Value, string> {
         let body = string("{\"query\":") + json_string(query) + "}";
 

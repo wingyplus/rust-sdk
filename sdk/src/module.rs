@@ -43,8 +43,10 @@ use goish::encoding::json;
 use goish::{append, int, make, nil, os, slice, strconv, string};
 
 use crate::engine::{self, Session, Transport};
-use crate::querybuilder::{arg_list, arg_string, Args, Chain, Fields, FromJson, Leaf, ListField};
-use crate::{fail, json_string};
+use crate::fail;
+use crate::querybuilder::{
+    arg_list, arg_string, json_string, Args, Chain, Fields, FromJson, Leaf, ListField,
+};
 
 /// Where a declaration was written, so an engine-side error about it can point
 /// at the source rather than at a name.
@@ -138,7 +140,7 @@ pub struct FunctionDef {
     /// else would fail the call rather than the build.
     ///
     /// Independent of `return_list`: the two compose as `Option<slice<T>>`,
-    /// where [`build_type_def`] wraps the element in a list and marks *that*
+    /// where `build_type_def` wraps the element in a list and marks *that*
     /// optional — a nullable list, not a list of nullable elements.
     pub return_optional: bool,
     /// From `#[dagger::check]`: `dagger check` runs this function.
@@ -786,7 +788,7 @@ impl StateWriter {
             self.out += ",";
         }
         self.empty = false;
-        self.out += crate::json_string(&string(name));
+        self.out += json_string(&string(name));
         self.out += ":";
         self.out += encoded;
     }
@@ -799,7 +801,7 @@ impl StateWriter {
 
 /// JSON-encode a string result.
 pub fn encode_string(value: &string) -> string {
-    crate::json_string(value)
+    json_string(value)
 }
 
 /// JSON-encode an integer result.
@@ -834,7 +836,7 @@ pub fn encode_bool(value: bool) -> string {
 /// the schema's own spelling of it. Infallible, unlike [`encode_object`] — the
 /// name is a `&'static str` the macro wrote, not something to go and fetch.
 pub fn encode_enum<T: EnumType>(value: &T) -> string {
-    crate::json_string(&string(value.member()))
+    json_string(&string(value.member()))
 }
 
 /// JSON-encode a function that returns nothing.
@@ -871,7 +873,7 @@ pub fn encode_null() -> string {
 /// for a generated object: what the function returns is a chain nothing has
 /// sent yet, and asking for its ID is what runs it.
 pub fn encode_object<T: crate::ObjectId>(value: &T) -> Result<string, string> {
-    Ok(crate::json_string(&value.to_id()?))
+    Ok(json_string(&value.to_id()?))
 }
 
 /// JSON-encode a module object as its state.
@@ -1017,7 +1019,8 @@ impl ArgValueFields {
     }
 }
 
-/// Serve this module: answer the engine's pending function call.
+/// Serve this module: answer the engine's pending function call — register,
+/// construct, or dispatch. A module's `main` is this and nothing else.
 ///
 /// `T` is the module's root object, declared with `#[dagger::object]`. The macro
 /// emits the [`Object`] impl this walks — the function table for registration,

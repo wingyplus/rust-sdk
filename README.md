@@ -405,8 +405,8 @@ pub fn first_line(&self, path: string) -> Result<string, errors::error> {
 }
 ```
 
-The two cross with `map_err(errors::New)` one way and `dagger::error_message`
-the other — which is what the dispatch calls, rather than `Error()`, because
+The two cross with `map_err(errors::New)` one way and the dispatch's own
+`error_message` the other — which it calls rather than `Error()`, because
 that method panics on the nil error. Any other error type is a compile error
 naming it: goish has no `Display` to read a message off one with.
 

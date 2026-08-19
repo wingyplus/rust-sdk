@@ -267,7 +267,7 @@ fn a_returned_object_is_encoded_as_its_id() {
 
     let arm = dispatch_arm("Build", &f, &Enums::default()).expect("a Container return dispatches");
     assert!(
-        arm.contains("::dagger::encode_object(&self.base())?"),
+        arm.contains("::dagger::__internal::encode_object(&self.base())?"),
         "encoded as its id, fallibly: {arm}"
     );
 }
@@ -294,7 +294,7 @@ fn a_list_argument_and_return_are_declared_as_lists() {
         "read as one list: {arm}"
     );
     assert!(
-        arm.contains("::dagger::encode_string_list(&self.tags(names))"),
+        arm.contains("::dagger::__internal::encode_string_list(&self.tags(names))"),
         "encoded as a list: {arm}"
     );
 }
@@ -321,7 +321,7 @@ fn a_list_of_floats_uses_the_float_accessor_and_encoder() {
         "read with the float list accessor: {arm}"
     );
     assert!(
-        arm.contains("::dagger::encode_float_list(&self.halved(numbers))"),
+        arm.contains("::dagger::__internal::encode_float_list(&self.halved(numbers))"),
         "encoded with the float list encoder: {arm}"
     );
 }
@@ -344,13 +344,13 @@ fn a_list_of_objects_goes_through_its_ids() {
 
     let arm = dispatch_arm("Build", &f, &Enums::default()).expect("a list of objects dispatches");
     assert!(
-        arm.contains(r#"let dirs = ::dagger::from_ids::<gen::Directory>(args.object_list("dirs")?);"#),
+        arm.contains(r#"let dirs = ::dagger::__internal::from_ids::<gen::Directory>(args.object_list("dirs")?);"#),
         "rebuilt from its ids: {arm}"
     );
     // Fallible for the reason a single object's is: each element's id is a
     // round trip.
     assert!(
-        arm.contains("::dagger::encode_object_list(&self.mount(dirs))?"),
+        arm.contains("::dagger::__internal::encode_object_list(&self.mount(dirs))?"),
         "encoded as ids, fallibly: {arm}"
     );
 }
@@ -381,7 +381,7 @@ fn an_optional_list_is_read_only_when_present() {
         "read through the optional accessor: {arm}"
     );
     assert!(
-        arm.contains(r#"args.object_list_opt("dirs")?.map(::dagger::from_ids::<Directory>)"#),
+        arm.contains(r#"args.object_list_opt("dirs")?.map(::dagger::__internal::from_ids::<Directory>)"#),
         "rebuilt only when present: {arm}"
     );
 }
@@ -440,28 +440,28 @@ fn a_plain_return_is_declared_required() {
 #[test]
 fn an_optional_return_encodes_none_as_null() {
     for (ty, some) in [
-        ("Option<string>", "::dagger::encode_string(&__value)"),
-        ("Option<int>", "::dagger::encode_int(__value)"),
-        ("Option<f64>", "::dagger::encode_float(__value)"),
-        ("Option<bool>", "::dagger::encode_bool(__value)"),
-        ("Option<Container>", "::dagger::encode_object(&__value)?"),
+        ("Option<string>", "::dagger::__internal::encode_string(&__value)"),
+        ("Option<int>", "::dagger::__internal::encode_int(__value)"),
+        ("Option<f64>", "::dagger::__internal::encode_float(__value)"),
+        ("Option<bool>", "::dagger::__internal::encode_bool(__value)"),
+        ("Option<Container>", "::dagger::__internal::encode_object(&__value)?"),
         // A list encoder takes the same `__value`, so the two features compose
         // rather than compete: the `Some` arm encodes the whole list, and the
         // `None` arm is still the null. A guard on `ret.list` in front of the
         // optional split would have encoded a `slice` still inside its `Option`.
-        ("Option<slice<string>>", "::dagger::encode_string_list(&__value)"),
-        ("Option<slice<int>>", "::dagger::encode_int_list(&__value)"),
-        ("Option<Vec<Directory>>", "::dagger::encode_object_list(&__value)?"),
+        ("Option<slice<string>>", "::dagger::__internal::encode_string_list(&__value)"),
+        ("Option<slice<int>>", "::dagger::__internal::encode_int_list(&__value)"),
+        ("Option<Vec<Directory>>", "::dagger::__internal::encode_object_list(&__value)?"),
         // An enum goes back as its member's name, which the value already
         // carries — so unlike the object arm this one has no `?`.
-        ("Option<TargetOs>", "::dagger::encode_enum(&__value)"),
+        ("Option<TargetOs>", "::dagger::__internal::encode_enum(&__value)"),
     ] {
         let f = function("maybe", Vec::new(), ty);
         let arm = dispatch_arm("Build", &f, &declared(&["TargetOs"]))
             .unwrap_or_else(|e| panic!("{ty}: {e}"));
         assert!(
             arm.contains(&format!(
-                "match self.maybe() {{ ::core::option::Option::Some(__value) => {some}, ::core::option::Option::None => ::dagger::encode_null() }}"
+                "match self.maybe() {{ ::core::option::Option::Some(__value) => {some}, ::core::option::Option::None => ::dagger::__internal::encode_null() }}"
             )),
             "`{ty}` encodes both halves: {arm}"
         );
@@ -477,7 +477,7 @@ fn a_fallible_optional_return_composes_both() {
     let arm =
         dispatch_arm("Build", &f, &Enums::default()).expect("a fallible optional return dispatches");
     assert!(
-        arm.contains("match (self.maybe())? { ::core::option::Option::Some(__value) => ::dagger::encode_string(&__value), ::core::option::Option::None => ::dagger::encode_null() }"),
+        arm.contains("match (self.maybe())? { ::core::option::Option::Some(__value) => ::dagger::__internal::encode_string(&__value), ::core::option::Option::None => ::dagger::__internal::encode_null() }"),
         "the `?` is inside the scrutinee: {arm}"
     );
 
@@ -592,23 +592,23 @@ fn a_fallible_return_is_declared_by_its_ok_type() {
 #[test]
 fn a_fallible_return_is_passed_through_with_a_question_mark() {
     for (ty, encoded) in [
-        ("Result<string, string>", "::dagger::encode_string(&(self.attempt())?)"),
-        ("Result<int, string>", "::dagger::encode_int((self.attempt())?)"),
-        ("Result<f64, string>", "::dagger::encode_float((self.attempt())?)"),
-        ("Result<bool, string>", "::dagger::encode_bool((self.attempt())?)"),
-        ("Result<(), string>", "{ (self.attempt())?; ::dagger::encode_void() }"),
+        ("Result<string, string>", "::dagger::__internal::encode_string(&(self.attempt())?)"),
+        ("Result<int, string>", "::dagger::__internal::encode_int((self.attempt())?)"),
+        ("Result<f64, string>", "::dagger::__internal::encode_float((self.attempt())?)"),
+        ("Result<bool, string>", "::dagger::__internal::encode_bool((self.attempt())?)"),
+        ("Result<(), string>", "{ (self.attempt())?; ::dagger::__internal::encode_void() }"),
         // Two `?`s, and they are different failures: the inner one is the
         // function's own, the outer is resolving the object it returned.
-        ("Result<Container, string>", "::dagger::encode_object(&(self.attempt())?)?"),
+        ("Result<Container, string>", "::dagger::__internal::encode_object(&(self.attempt())?)?"),
         // A goish `error` is a value, not a message, so it is read through the
         // helper — `Error()` inline would panic on the nil one.
         (
             "Result<string, error>",
-            "::dagger::encode_string(&(self.attempt()).map_err(::dagger::error_message)?)",
+            "::dagger::__internal::encode_string(&(self.attempt()).map_err(::dagger::__internal::error_message)?)",
         ),
         (
             "Result<(), goish::error>",
-            "{ (self.attempt()).map_err(::dagger::error_message)?; ::dagger::encode_void() }",
+            "{ (self.attempt()).map_err(::dagger::__internal::error_message)?; ::dagger::__internal::encode_void() }",
         ),
     ] {
         let f = function("attempt", Vec::new(), ty);
@@ -672,11 +672,11 @@ fn a_source_location_becomes_a_source_map() {
     };
     assert_eq!(
         source_map_def(&known),
-        r#"::dagger::SourceMapDef { file: "src/main.rs", line: 42, column: 9 }"#
+        r#"::dagger::__internal::SourceMapDef { file: "src/main.rs", line: 42, column: 9 }"#
     );
     assert_eq!(
         source_map_def(&SourceLoc::unknown()),
-        "::dagger::SourceMapDef::UNKNOWN"
+        "::dagger::__internal::SourceMapDef::UNKNOWN"
     );
 }
 
@@ -697,11 +697,11 @@ fn a_function_and_its_arguments_carry_their_source() {
 
     let def = function_def(&f, &Enums::default()).expect("a located function is supported");
     assert!(
-        def.contains(r#"source: ::dagger::SourceMapDef { file: "src/main.rs", line: 12, column: 5 }"#),
+        def.contains(r#"source: ::dagger::__internal::SourceMapDef { file: "src/main.rs", line: 12, column: 5 }"#),
         "the function's own location: {def}"
     );
     assert!(
-        def.contains(r#"source: ::dagger::SourceMapDef { file: "src/main.rs", line: 13, column: 9 }"#),
+        def.contains(r#"source: ::dagger::__internal::SourceMapDef { file: "src/main.rs", line: 13, column: 9 }"#),
         "the argument's location: {def}"
     );
 }
@@ -728,7 +728,7 @@ fn the_impl_doc_becomes_the_object_doc() {
     );
     assert!(
         generated.contains(
-            r#"const SOURCE: ::dagger::SourceMapDef = ::dagger::SourceMapDef { file: "src/main.rs", line: 7, column: 6 };"#
+            r#"const SOURCE: ::dagger::__internal::SourceMapDef = ::dagger::__internal::SourceMapDef { file: "src/main.rs", line: 7, column: 6 };"#
         ),
         "the type name's location reaches the object: {generated}"
     );
@@ -751,7 +751,7 @@ fn an_undocumented_impl_declares_an_empty_doc() {
         "no description: {generated}"
     );
     assert!(
-        generated.contains("const SOURCE: ::dagger::SourceMapDef = ::dagger::SourceMapDef::UNKNOWN;"),
+        generated.contains("const SOURCE: ::dagger::__internal::SourceMapDef = ::dagger::__internal::SourceMapDef::UNKNOWN;"),
         "no source map: {generated}"
     );
 }
@@ -783,7 +783,7 @@ fn a_float_argument_and_return_use_the_float_accessor_and_encoder() {
         "read with the float accessor: {arm}"
     );
     assert!(
-        arm.contains("::dagger::encode_float(self.scale(factor))"),
+        arm.contains("::dagger::__internal::encode_float(self.scale(factor))"),
         "encoded with the float encoder: {arm}"
     );
 }
@@ -914,12 +914,12 @@ fn enum_arguments_and_returns_go_through_from_member() {
     let arm = dispatch_arm("Build", &f, &enums).expect("an enum argument dispatches");
     assert!(
         arm.contains(
-            r#"let os = <TargetOs as ::dagger::EnumType>::from_member(&args.enum_member("os")?)?;"#
+            r#"let os = <TargetOs as ::dagger::__internal::EnumType>::from_member(&args.enum_member("os")?)?;"#
         ),
         "read as a member name: {arm}"
     );
     assert!(
-        arm.contains("::dagger::encode_enum(&self.build(os))"),
+        arm.contains("::dagger::__internal::encode_enum(&self.build(os))"),
         "returned as a member name: {arm}"
     );
 }
@@ -941,7 +941,7 @@ fn an_optional_enum_argument_keeps_its_failure_outside_the_option() {
     let arm = dispatch_arm("Build", &f, &enums).expect("an optional enum dispatches");
     assert!(
         arm.contains(r#"match args.enum_member_opt("os")?"#)
-            && arm.contains("<TargetOs as ::dagger::EnumType>::from_member(&member)?"),
+            && arm.contains("<TargetOs as ::dagger::__internal::EnumType>::from_member(&member)?"),
         "read only when present, and fallibly: {arm}"
     );
 }
@@ -953,8 +953,8 @@ fn declared_enums_reach_the_object_impl() {
     let enums = declared(&["TargetOs", "gen::Level"]);
     let listed = enum_defs(&enums);
     assert!(
-        listed.contains("<TargetOs as ::dagger::EnumType>::DEF,")
-            && listed.contains("<gen::Level as ::dagger::EnumType>::DEF,"),
+        listed.contains("<TargetOs as ::dagger::__internal::EnumType>::DEF,")
+            && listed.contains("<gen::Level as ::dagger::__internal::EnumType>::DEF,"),
         "each enum is named as the attribute spelled it: {listed}"
     );
 
@@ -983,13 +983,13 @@ fn an_enum_declares_its_variants_and_their_docs() {
     );
     assert!(
         emitted
-            .contains(r#"::dagger::EnumMemberDef { name: "Alpine", doc: "Alpine Linux." },"#),
+            .contains(r#"::dagger::__internal::EnumMemberDef { name: "Alpine", doc: "Alpine Linux." },"#),
         "a member carries its doc: {emitted}"
     );
     // Spelled as the variant is, not SCREAMING_SNAKE_CASE: the engine derives
     // the name a caller writes, and hands the module back this one.
     assert!(
-        emitted.contains(r#"::dagger::EnumMemberDef { name: "DebianTesting", doc: "" },"#),
+        emitted.contains(r#"::dagger::__internal::EnumMemberDef { name: "DebianTesting", doc: "" },"#),
         "a member with no doc is still declared: {emitted}"
     );
     assert!(
@@ -1103,18 +1103,18 @@ fn a_field_is_read_and_written_by_its_kind() {
         r#"source: <gen::Directory as ::dagger::ObjectId>::from_id(state.object("source")?),"#,
         // A list of objects arrives as a list of ids and is rebuilt element by
         // element, exactly as a list-typed argument is.
-        r#"mounts: ::dagger::from_ids::<gen::Directory>(state.object_list("mounts")?),"#,
+        r#"mounts: ::dagger::__internal::from_ids::<gen::Directory>(state.object_list("mounts")?),"#,
         r#"tags: state.string_list("tags")?,"#,
-        r#"__state.put("image", ::dagger::encode_string(&self.image));"#,
-        r#"__state.put("jobs", ::dagger::encode_int(self.jobs));"#,
-        r#"__state.put("source", ::dagger::encode_object(&self.source)?);"#,
-        r#"__state.put("mounts", ::dagger::encode_object_list(&self.mounts)?);"#,
-        r#"__state.put("tags", ::dagger::encode_string_list(&self.tags));"#,
+        r#"__state.put("image", ::dagger::__internal::encode_string(&self.image));"#,
+        r#"__state.put("jobs", ::dagger::__internal::encode_int(self.jobs));"#,
+        r#"__state.put("source", ::dagger::__internal::encode_object(&self.source)?);"#,
+        r#"__state.put("mounts", ::dagger::__internal::encode_object_list(&self.mounts)?);"#,
+        r#"__state.put("tags", ::dagger::__internal::encode_string_list(&self.tags));"#,
     ] {
         assert!(generated.contains(want), "emits {want}: {generated}");
     }
     assert!(
-        generated.contains("::dagger::encode_null()"),
+        generated.contains("::dagger::__internal::encode_null()"),
         "an absent optional is written as null: {generated}"
     );
 }
@@ -1127,7 +1127,7 @@ fn a_unit_struct_declares_no_fields() {
     let generated = state_impl(&struct_def(Vec::new()), &Enums::default()).expect("a unit struct is supported");
 
     assert!(
-        generated.contains("const FIELDS: &[::dagger::FieldDef] = &[];"),
+        generated.contains("const FIELDS: &[::dagger::__internal::FieldDef] = &[];"),
         "an empty field table: {generated}"
     );
     assert!(
@@ -1197,7 +1197,7 @@ fn a_constructor_is_registered_with_no_name() {
 
     assert!(
         generated
-            .contains(r#"const CONSTRUCTOR: ::dagger::FunctionDef = ::dagger::FunctionDef { name: "","#),
+            .contains(r#"const CONSTRUCTOR: ::dagger::__internal::FunctionDef = ::dagger::__internal::FunctionDef { name: "","#),
         "registered with no name: {generated}"
     );
     assert!(
@@ -1205,7 +1205,7 @@ fn a_constructor_is_registered_with_no_name() {
         "returns the object: {generated}"
     );
     assert!(
-        generated.contains("const FUNCTIONS: &[::dagger::FunctionDef] = &[];"),
+        generated.contains("const FUNCTIONS: &[::dagger::__internal::FunctionDef] = &[];"),
         "and is not one of the functions: {generated}"
     );
     assert!(
@@ -1213,7 +1213,7 @@ fn a_constructor_is_registered_with_no_name() {
         "reads its arguments like any other function: {generated}"
     );
     assert!(
-        generated.contains("::dagger::ObjectState::to_state(&Build::new(image))"),
+        generated.contains("::dagger::__internal::ObjectState::to_state(&Build::new(image))"),
         "encodes what it built: {generated}"
     );
 }
@@ -1230,7 +1230,7 @@ fn a_constructor_may_be_written_fallibly() {
     .expect("a fallible constructor is supported");
 
     assert!(
-        generated.contains("::dagger::ObjectState::to_state(&(Build::new())?)"),
+        generated.contains("::dagger::__internal::ObjectState::to_state(&(Build::new())?)"),
         "the `?` is inside the borrow: {generated}"
     );
 }
@@ -1284,14 +1284,14 @@ fn returning_the_objects_own_type_encodes_its_state() {
 
     let arm = dispatch_arm("Build", &f, &Enums::default()).expect("returning the object is supported");
     assert!(
-        arm.contains("::dagger::encode_state(&self.with_tag(tag))?"),
+        arm.contains("::dagger::__internal::encode_state(&self.with_tag(tag))?"),
         "encoded as its state: {arm}"
     );
 
     let other = function("base", Vec::new(), "Container");
     let arm = dispatch_arm("Build", &other, &Enums::default()).expect("returning an engine object is supported");
     assert!(
-        arm.contains("::dagger::encode_object(&self.base())?"),
+        arm.contains("::dagger::__internal::encode_object(&self.base())?"),
         "an engine object is still encoded as its id: {arm}"
     );
 }

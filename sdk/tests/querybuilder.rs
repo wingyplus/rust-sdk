@@ -23,10 +23,9 @@
 
 use core::cell::RefCell;
 
-use dagger::json_string;
-use dagger::querybuilder::{Chain, Field, Fields, Leaf, ListField, OptField, Sel};
+use dagger::__internal::{Arguments, EnumType, Object};
 use dagger::engine::Transport;
-use dagger::{Arguments, EnumType, Object};
+use dagger::querybuilder::{json_string, Chain, Field, Fields, Leaf, ListField, OptField, Sel};
 use goish::encoding::json;
 use goish::{append, bytes, fmt, int, make, nil, os, slice, string, testing};
 
@@ -653,7 +652,7 @@ fn TestFetchRoundTripsThroughATransport(t: &mut testing::T) {
         sent: RefCell::new(string("")),
     };
 
-    let (out, platform) = match dagger::fetch(&engine, &chain, &(c.stdout(), c.platform())) {
+    let (out, platform) = match dagger::engine::fetch(&engine, &chain, &(c.stdout(), c.platform())) {
         Ok(decoded) => decoded,
         Err(why) => t.Fatal(fmt::Sprintf!("fetch: %s", why)),
     };
@@ -679,7 +678,7 @@ fn TestFetchPropagatesATransportFailure(t: &mut testing::T) {
     }
 
     let c = ContainerFields::new();
-    match dagger::fetch(&Broken, &Chain::root(), &c.stdout()) {
+    match dagger::engine::fetch(&Broken, &Chain::root(), &c.stdout()) {
         Ok(_) => t.Error("fetch succeeded against a broken transport"),
         Err(why) => assert_contains(t, "transport failure", why, "connection refused"),
     }
@@ -787,7 +786,7 @@ fn TestEnumMembersRoundTripThroughTheirNames(t: &mut testing::T) {
         Err(why) => t.Fatal(fmt::Sprintf!("from_member: %s", why)),
     };
     assert_string(t, "the member", string(os.member()), "Debian");
-    assert_string(t, "the encoded member", dagger::encode_enum(&os), "\"Debian\"");
+    assert_string(t, "the encoded member", dagger::__internal::encode_enum(&os), "\"Debian\"");
 
     // The engine's own spelling of the member — what a caller writes — is not
     // what a module deals in, and reading one back would be accepting a name
@@ -914,7 +913,7 @@ fn TestDispatchTurnsAMemberNameIntoAVariant(t: &mut testing::T) {
 /// The one encoder in this suite: the rest of the dispatch is what
 /// `#[dagger::object]` emits, and `sdk/macros`'s own tests assert on that text.
 fn TestNullEncodesTheWayAnAbsentArgumentArrives(t: &mut testing::T) {
-    let encoded = dagger::encode_null();
+    let encoded = dagger::__internal::encode_null();
     assert_string(t, "encode_null", encoded.clone(), "null");
 
     // Decoded rather than only compared, so the assertion is that those
@@ -932,7 +931,7 @@ fn TestNullEncodesTheWayAnAbsentArgumentArrives(t: &mut testing::T) {
 
     // And back in through the argument side, which is where the engine's own
     // `null` lands: the same text a module writes for `None` reads back as one.
-    let args = dagger::Arguments::new(slice!([](string, string) {
+    let args = dagger::__internal::Arguments::new(slice!([](string, string) {
         (string("maybe"), encoded)
     }));
     match args.string_opt("maybe") {
